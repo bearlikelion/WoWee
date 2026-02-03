@@ -9,9 +9,28 @@
 #include <glm/gtc/type_ptr.hpp>
 #include <unordered_set>
 #include <algorithm>
+#include <cmath>
+#include <limits>
 
 namespace wowee {
 namespace rendering {
+
+namespace {
+
+void getTightCollisionBounds(const M2ModelGPU& model, glm::vec3& outMin, glm::vec3& outMax) {
+    glm::vec3 center = (model.boundMin + model.boundMax) * 0.5f;
+    glm::vec3 half = (model.boundMax - model.boundMin) * 0.5f;
+
+    // Tighten footprint to reduce overly large object blockers.
+    half.x *= 0.60f;
+    half.y *= 0.60f;
+    half.z *= 0.90f;
+
+    outMin = center - half;
+    outMax = center + half;
+}
+
+} // namespace
 
 void M2Instance::updateModelMatrix() {
     modelMatrix = glm::mat4(1.0f);
@@ -175,8 +194,16 @@ bool M2Renderer::loadModel(const pipeline::M2Model& model, uint32_t modelId) {
 
     M2ModelGPU gpuModel;
     gpuModel.name = model.name;
-    gpuModel.boundMin = model.boundMin;
-    gpuModel.boundMax = model.boundMax;
+    // Use tight bounds from actual vertices for collision/camera occlusion.
+    // Header bounds in some M2s are overly conservative.
+    glm::vec3 tightMin( std::numeric_limits<float>::max());
+    glm::vec3 tightMax(-std::numeric_limits<float>::max());
+    for (const auto& v : model.vertices) {
+        tightMin = glm::min(tightMin, v.position);
+        tightMax = glm::max(tightMax, v.position);
+    }
+    gpuModel.boundMin = tightMin;
+    gpuModel.boundMax = tightMax;
     gpuModel.boundRadius = model.boundRadius;
     gpuModel.indexCount = static_cast<uint32_t>(model.indices.size());
     gpuModel.vertexCount = static_cast<uint32_t>(model.vertices.size());
@@ -532,56 +559,102 @@ uint32_t M2Renderer::getTotalTriangleCount() const {
     return total;
 }
 
+std::optional<float> M2Renderer::getFloorHeight(float glX, float glY, float glZ) const {
+    std::optional<float> bestFloor;
+
+    for (const auto& instance : instances) {
+        auto it = models.find(instance.modelId);
+        if (it == models.end()) continue;
+        if (instance.scale <= 0.001f) continue;
+
+        const M2ModelGPU& model = it->second;
+        glm::vec3 localMin, localMax;
+        getTightCollisionBounds(model, localMin, localMax);
+
+        glm::mat4 invModel = glm::inverse(instance.modelMatrix);
+        glm::vec3 localPos = glm::vec3(invModel * glm::vec4(glX, glY, glZ, 1.0f));
+
+        // Must be within doodad footprint in local XY.
+        if (localPos.x < localMin.x || localPos.x > localMax.x ||
+            localPos.y < localMin.y || localPos.y > localMax.y) {
+            continue;
+        }
+
+        // Construct "top" point at queried XY in local space, then transform back.
+        glm::vec3 localTop(localPos.x, localPos.y, localMax.z);
+        glm::vec3 worldTop = glm::vec3(instance.modelMatrix * glm::vec4(localTop, 1.0f));
+
+        // Reachability filter: only consider floors slightly above current feet.
+        if (worldTop.z > glZ + 1.0f) continue;
+
+        if (!bestFloor || worldTop.z > *bestFloor) {
+            bestFloor = worldTop.z;
+        }
+    }
+
+    return bestFloor;
+}
+
 bool M2Renderer::checkCollision(const glm::vec3& from, const glm::vec3& to,
                                  glm::vec3& adjustedPos, float playerRadius) const {
+    (void)from;
     adjustedPos = to;
     bool collided = false;
 
-    // Check against all M2 instances using their bounding boxes
+    // Check against all M2 instances in local space (rotation-aware).
     for (const auto& instance : instances) {
         auto it = models.find(instance.modelId);
         if (it == models.end()) continue;
 
         const M2ModelGPU& model = it->second;
+        if (instance.scale <= 0.001f) continue;
 
-        // Transform model bounds to world space (approximate with scaled AABB)
-        glm::vec3 worldMin = instance.position + model.boundMin * instance.scale;
-        glm::vec3 worldMax = instance.position + model.boundMax * instance.scale;
+        glm::mat4 invModel = glm::inverse(instance.modelMatrix);
+        glm::vec3 localPos = glm::vec3(invModel * glm::vec4(adjustedPos, 1.0f));
+        float localRadius = playerRadius / instance.scale;
 
-        // Ensure min/max are correct
-        glm::vec3 actualMin = glm::min(worldMin, worldMax);
-        glm::vec3 actualMax = glm::max(worldMin, worldMax);
+        glm::vec3 localMin, localMax;
+        getTightCollisionBounds(model, localMin, localMax);
+        localMin -= glm::vec3(localRadius);
+        localMax += glm::vec3(localRadius);
 
-        // Expand bounds by player radius
-        actualMin -= glm::vec3(playerRadius);
-        actualMax += glm::vec3(playerRadius);
-
-        // Check if player position is inside expanded bounds (XY only for walking)
-        if (adjustedPos.x >= actualMin.x && adjustedPos.x <= actualMax.x &&
-            adjustedPos.y >= actualMin.y && adjustedPos.y <= actualMax.y &&
-            adjustedPos.z >= actualMin.z && adjustedPos.z <= actualMax.z) {
-
-            // Push player out of the object
-            // Find the shortest push direction (XY only)
-            float pushLeft = adjustedPos.x - actualMin.x;
-            float pushRight = actualMax.x - adjustedPos.x;
-            float pushBack = adjustedPos.y - actualMin.y;
-            float pushFront = actualMax.y - adjustedPos.y;
-
-            float minPush = std::min({pushLeft, pushRight, pushBack, pushFront});
-
-            if (minPush == pushLeft) {
-                adjustedPos.x = actualMin.x - 0.01f;
-            } else if (minPush == pushRight) {
-                adjustedPos.x = actualMax.x + 0.01f;
-            } else if (minPush == pushBack) {
-                adjustedPos.y = actualMin.y - 0.01f;
-            } else {
-                adjustedPos.y = actualMax.y + 0.01f;
-            }
-
-            collided = true;
+        // Feet-based vertical overlap test: ignore objects fully above/below us.
+        constexpr float PLAYER_HEIGHT = 2.0f;
+        if (localPos.z + PLAYER_HEIGHT < localMin.z || localPos.z > localMax.z) {
+            continue;
         }
+
+        if (localPos.x < localMin.x || localPos.x > localMax.x ||
+            localPos.y < localMin.y || localPos.y > localMax.y) {
+            continue;
+        }
+
+        float pushLeft  = localPos.x - localMin.x;
+        float pushRight = localMax.x - localPos.x;
+        float pushBack  = localPos.y - localMin.y;
+        float pushFront = localMax.y - localPos.y;
+
+        float minPush = std::min({pushLeft, pushRight, pushBack, pushFront});
+        // Soft pushback to avoid large snapping when grazing doodads.
+        float pushAmount = std::min(0.05f, std::max(0.0f, minPush * 0.30f));
+        if (pushAmount <= 0.0f) {
+            continue;
+        }
+        glm::vec3 localPush(0.0f);
+        if (minPush == pushLeft) {
+            localPush.x = -pushAmount;
+        } else if (minPush == pushRight) {
+            localPush.x = pushAmount;
+        } else if (minPush == pushBack) {
+            localPush.y = -pushAmount;
+        } else {
+            localPush.y = pushAmount;
+        }
+
+        glm::vec3 worldPush = glm::vec3(instance.modelMatrix * glm::vec4(localPush, 0.0f));
+        adjustedPos.x += worldPush.x;
+        adjustedPos.y += worldPush.y;
+        collided = true;
     }
 
     return collided;
@@ -595,33 +668,36 @@ float M2Renderer::raycastBoundingBoxes(const glm::vec3& origin, const glm::vec3&
         if (it == models.end()) continue;
 
         const M2ModelGPU& model = it->second;
+        glm::vec3 localMin, localMax;
+        getTightCollisionBounds(model, localMin, localMax);
+        // Skip tiny doodads for camera occlusion; they cause jitter and false hits.
+        glm::vec3 extents = (localMax - localMin) * instance.scale;
+        if (glm::length(extents) < 0.75f) continue;
 
-        // Transform model bounds to world space (approximate with scaled AABB)
-        glm::vec3 worldMin = instance.position + model.boundMin * instance.scale;
-        glm::vec3 worldMax = instance.position + model.boundMax * instance.scale;
+        glm::mat4 invModel = glm::inverse(instance.modelMatrix);
+        glm::vec3 localOrigin = glm::vec3(invModel * glm::vec4(origin, 1.0f));
+        glm::vec3 localDir = glm::normalize(glm::vec3(invModel * glm::vec4(direction, 0.0f)));
+        if (!std::isfinite(localDir.x) || !std::isfinite(localDir.y) || !std::isfinite(localDir.z)) {
+            continue;
+        }
 
-        // Ensure min/max are correct
-        glm::vec3 actualMin = glm::min(worldMin, worldMax);
-        glm::vec3 actualMax = glm::max(worldMin, worldMax);
-
-        // Ray-AABB intersection (slab method)
-        glm::vec3 invDir = 1.0f / direction;
-        glm::vec3 tMin = (actualMin - origin) * invDir;
-        glm::vec3 tMax = (actualMax - origin) * invDir;
-
-        // Handle negative direction components
+        // Local-space AABB slab intersection.
+        glm::vec3 invDir = 1.0f / localDir;
+        glm::vec3 tMin = (localMin - localOrigin) * invDir;
+        glm::vec3 tMax = (localMax - localOrigin) * invDir;
         glm::vec3 t1 = glm::min(tMin, tMax);
         glm::vec3 t2 = glm::max(tMin, tMax);
 
         float tNear = std::max({t1.x, t1.y, t1.z});
         float tFar = std::min({t2.x, t2.y, t2.z});
+        if (tNear > tFar || tFar <= 0.0f) continue;
 
-        // Check if ray intersects the box
-        if (tNear <= tFar && tFar > 0.0f) {
-            float hitDist = tNear > 0.0f ? tNear : tFar;
-            if (hitDist > 0.0f && hitDist < closestHit) {
-                closestHit = hitDist;
-            }
+        float tHit = tNear > 0.0f ? tNear : tFar;
+        glm::vec3 localHit = localOrigin + localDir * tHit;
+        glm::vec3 worldHit = glm::vec3(instance.modelMatrix * glm::vec4(localHit, 1.0f));
+        float worldDist = glm::length(worldHit - origin);
+        if (worldDist > 0.0f && worldDist < closestHit) {
+            closestHit = worldDist;
         }
     }
 

@@ -165,6 +165,41 @@ void CameraController::update(float deltaTime) {
     if (thirdPerson && followTarget) {
         // Move the follow target (character position) instead of the camera
         glm::vec3 targetPos = *followTarget;
+        auto clampMoveAgainstWMO = [&](const glm::vec3& fromFeet, glm::vec3& toFeet) {
+            if (!wmoRenderer) return;
+            glm::vec3 move = toFeet - fromFeet;
+            move.z = 0.0f;
+            float moveDist = glm::length(glm::vec2(move));
+            if (moveDist < 0.001f) return;
+
+            glm::vec3 dir = glm::normalize(move);
+            glm::vec3 perp(-dir.y, dir.x, 0.0f);
+            constexpr float BODY_RADIUS = 0.38f;
+            constexpr float SAFETY = 0.08f;
+            constexpr float HEIGHTS[3] = {0.4f, 1.0f, 1.6f};
+            const glm::vec3 probes[3] = {
+                fromFeet,
+                fromFeet + perp * BODY_RADIUS,
+                fromFeet - perp * BODY_RADIUS
+            };
+
+            float bestHit = moveDist + 1.0f;
+            for (const glm::vec3& probeBase : probes) {
+                for (float h : HEIGHTS) {
+                    glm::vec3 origin = probeBase + glm::vec3(0.0f, 0.0f, h);
+                    float hit = wmoRenderer->raycastBoundingBoxes(origin, dir, moveDist + SAFETY);
+                    if (hit < bestHit) {
+                        bestHit = hit;
+                    }
+                }
+            }
+
+            if (bestHit < moveDist + SAFETY) {
+                float allowed = std::max(0.0f, bestHit - SAFETY);
+                toFeet.x = fromFeet.x + dir.x * allowed;
+                toFeet.y = fromFeet.y + dir.y * allowed;
+            }
+        };
 
         // Check for water at current position
         std::optional<float> waterH;
@@ -234,6 +269,7 @@ void CameraController::update(float deltaTime) {
 
             for (int i = 0; i < sweepSteps; i++) {
                 glm::vec3 candidate = stepPos + stepDelta;
+                clampMoveAgainstWMO(stepPos, candidate);
 
                 if (wmoRenderer) {
                     glm::vec3 adjusted;
@@ -269,13 +305,21 @@ void CameraController::update(float deltaTime) {
             auto getGroundAt = [&](float x, float y) -> std::optional<float> {
                 std::optional<float> terrainH;
                 std::optional<float> wmoH;
+                std::optional<float> m2H;
                 if (terrainManager) {
                     terrainH = terrainManager->getHeightAt(x, y);
                 }
                 if (wmoRenderer) {
                     wmoH = wmoRenderer->getFloorHeight(x, y, targetPos.z + 5.0f);
                 }
-                return selectReachableFloor(terrainH, wmoH, targetPos.z, 1.0f);
+                if (m2Renderer) {
+                    m2H = m2Renderer->getFloorHeight(x, y, targetPos.z);
+                }
+                auto base = selectReachableFloor(terrainH, wmoH, targetPos.z, 1.0f);
+                if (m2H && *m2H <= targetPos.z + 1.0f && (!base || *m2H > *base)) {
+                    base = m2H;
+                }
+                return base;
             };
 
             // Get ground height at target position
@@ -340,17 +384,38 @@ void CameraController::update(float deltaTime) {
 
         // Ground the character to terrain or WMO floor
         {
-            std::optional<float> terrainH;
-            std::optional<float> wmoH;
+            auto sampleGround = [&](float x, float y) -> std::optional<float> {
+                std::optional<float> terrainH;
+                std::optional<float> wmoH;
+                std::optional<float> m2H;
+                if (terrainManager) {
+                    terrainH = terrainManager->getHeightAt(x, y);
+                }
+                if (wmoRenderer) {
+                    wmoH = wmoRenderer->getFloorHeight(x, y, targetPos.z + eyeHeight);
+                }
+                if (m2Renderer) {
+                    m2H = m2Renderer->getFloorHeight(x, y, targetPos.z);
+                }
+                auto base = selectReachableFloor(terrainH, wmoH, targetPos.z, 1.0f);
+                if (m2H && *m2H <= targetPos.z + 1.0f && (!base || *m2H > *base)) {
+                    base = m2H;
+                }
+                return base;
+            };
 
-            if (terrainManager) {
-                terrainH = terrainManager->getHeightAt(targetPos.x, targetPos.y);
+            // Sample center + small footprint to avoid slipping through narrow floor pieces.
+            std::optional<float> groundH;
+            constexpr float FOOTPRINT = 0.28f;
+            const glm::vec2 offsets[] = {
+                {0.0f, 0.0f}, {FOOTPRINT, 0.0f}, {-FOOTPRINT, 0.0f}, {0.0f, FOOTPRINT}, {0.0f, -FOOTPRINT}
+            };
+            for (const auto& o : offsets) {
+                auto h = sampleGround(targetPos.x + o.x, targetPos.y + o.y);
+                if (h && (!groundH || *h > *groundH)) {
+                    groundH = h;
+                }
             }
-            if (wmoRenderer) {
-                wmoH = wmoRenderer->getFloorHeight(targetPos.x, targetPos.y, targetPos.z + eyeHeight);
-            }
-
-            std::optional<float> groundH = selectReachableFloor(terrainH, wmoH, targetPos.z, 1.0f);
 
             if (groundH) {
                 float groundDiff = *groundH - lastGroundZ;
@@ -417,13 +482,7 @@ void CameraController::update(float deltaTime) {
             }
         }
 
-        // Raycast against M2 bounding boxes
-        if (m2Renderer && collisionDistance > MIN_DISTANCE) {
-            float m2Hit = m2Renderer->raycastBoundingBoxes(pivot, camDir, collisionDistance);
-            if (m2Hit < collisionDistance) {
-                collisionDistance = std::max(MIN_DISTANCE, m2Hit - CAM_SPHERE_RADIUS - CAM_EPSILON);
-            }
-        }
+        // Intentionally ignore M2 doodads for camera collision to match WoW feel.
 
         // Check floor collision along the camera path
         // Sample a few points to find where camera would go underground
@@ -479,6 +538,41 @@ void CameraController::update(float deltaTime) {
     } else {
         // Free-fly camera mode (original behavior)
         glm::vec3 newPos = camera->getPosition();
+        auto clampMoveAgainstWMO = [&](const glm::vec3& fromFeet, glm::vec3& toFeet) {
+            if (!wmoRenderer) return;
+            glm::vec3 move = toFeet - fromFeet;
+            move.z = 0.0f;
+            float moveDist = glm::length(glm::vec2(move));
+            if (moveDist < 0.001f) return;
+
+            glm::vec3 dir = glm::normalize(move);
+            glm::vec3 perp(-dir.y, dir.x, 0.0f);
+            constexpr float BODY_RADIUS = 0.38f;
+            constexpr float SAFETY = 0.08f;
+            constexpr float HEIGHTS[3] = {0.4f, 1.0f, 1.6f};
+            const glm::vec3 probes[3] = {
+                fromFeet,
+                fromFeet + perp * BODY_RADIUS,
+                fromFeet - perp * BODY_RADIUS
+            };
+
+            float bestHit = moveDist + 1.0f;
+            for (const glm::vec3& probeBase : probes) {
+                for (float h : HEIGHTS) {
+                    glm::vec3 origin = probeBase + glm::vec3(0.0f, 0.0f, h);
+                    float hit = wmoRenderer->raycastBoundingBoxes(origin, dir, moveDist + SAFETY);
+                    if (hit < bestHit) {
+                        bestHit = hit;
+                    }
+                }
+            }
+
+            if (bestHit < moveDist + SAFETY) {
+                float allowed = std::max(0.0f, bestHit - SAFETY);
+                toFeet.x = fromFeet.x + dir.x * allowed;
+                toFeet.y = fromFeet.y + dir.y * allowed;
+            }
+        };
         float feetZ = newPos.z - eyeHeight;
 
         // Check for water at feet position
@@ -546,6 +640,7 @@ void CameraController::update(float deltaTime) {
 
             for (int i = 0; i < sweepSteps; i++) {
                 glm::vec3 candidate = stepPos + stepDelta;
+                clampMoveAgainstWMO(stepPos, candidate);
                 glm::vec3 adjusted;
                 if (wmoRenderer->checkWallCollision(stepPos, candidate, adjusted)) {
                     candidate = adjusted;
@@ -558,17 +653,37 @@ void CameraController::update(float deltaTime) {
 
         // Ground to terrain or WMO floor
         {
-            std::optional<float> terrainH;
-            std::optional<float> wmoH;
+            auto sampleGround = [&](float x, float y) -> std::optional<float> {
+                std::optional<float> terrainH;
+                std::optional<float> wmoH;
+                std::optional<float> m2H;
+                if (terrainManager) {
+                    terrainH = terrainManager->getHeightAt(x, y);
+                }
+                if (wmoRenderer) {
+                    wmoH = wmoRenderer->getFloorHeight(x, y, newPos.z);
+                }
+                if (m2Renderer) {
+                    m2H = m2Renderer->getFloorHeight(x, y, newPos.z - eyeHeight);
+                }
+                auto base = selectReachableFloor(terrainH, wmoH, newPos.z - eyeHeight, 1.0f);
+                if (m2H && *m2H <= (newPos.z - eyeHeight) + 1.0f && (!base || *m2H > *base)) {
+                    base = m2H;
+                }
+                return base;
+            };
 
-            if (terrainManager) {
-                terrainH = terrainManager->getHeightAt(newPos.x, newPos.y);
+            std::optional<float> groundH;
+            constexpr float FOOTPRINT = 0.28f;
+            const glm::vec2 offsets[] = {
+                {0.0f, 0.0f}, {FOOTPRINT, 0.0f}, {-FOOTPRINT, 0.0f}, {0.0f, FOOTPRINT}, {0.0f, -FOOTPRINT}
+            };
+            for (const auto& o : offsets) {
+                auto h = sampleGround(newPos.x + o.x, newPos.y + o.y);
+                if (h && (!groundH || *h > *groundH)) {
+                    groundH = h;
+                }
             }
-            if (wmoRenderer) {
-                wmoH = wmoRenderer->getFloorHeight(newPos.x, newPos.y, newPos.z);
-            }
-
-            std::optional<float> groundH = selectReachableFloor(terrainH, wmoH, newPos.z - eyeHeight, 1.0f);
 
             if (groundH) {
                 lastGroundZ = *groundH;

@@ -7,6 +7,7 @@
 #include <unordered_map>
 #include <vector>
 #include <string>
+#include <optional>
 
 namespace wowee {
 
@@ -143,6 +144,14 @@ public:
      */
     bool checkCollision(const glm::vec3& from, const glm::vec3& to,
                         glm::vec3& adjustedPos, float playerRadius = 0.5f) const;
+
+    /**
+     * Approximate top surface height for standing/jumping on doodads.
+     * @param glX World X
+     * @param glY World Y
+     * @param glZ Query/reference Z (used to ignore unreachable tops)
+     */
+    std::optional<float> getFloorHeight(float glX, float glY, float glZ) const;
 
     /**
      * Raycast against M2 bounding boxes for camera collision

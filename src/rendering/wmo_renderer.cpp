@@ -884,6 +884,9 @@ bool WMORenderer::checkWallCollision(const glm::vec3& from, const glm::vec3& to,
                     // Push player away from wall (horizontal only)
                     float pushDist = PLAYER_RADIUS - absPlaneDist;
                     if (pushDist > 0.0f) {
+                        // Soft pushback avoids hard side-snaps when skimming walls.
+                        pushDist = std::min(0.06f, pushDist * 0.30f);
+                        if (pushDist <= 0.0f) continue;
                         float sign = planeDist > 0.0f ? 1.0f : -1.0f;
                         glm::vec3 pushLocal = normal * sign * pushDist;
 
@@ -944,22 +947,31 @@ float WMORenderer::raycastBoundingBoxes(const glm::vec3& origin, const glm::vec3
         glm::vec3 localDir = glm::normalize(glm::vec3(instance.invModelMatrix * glm::vec4(direction, 0.0f)));
 
         for (const auto& group : model.groups) {
-            // Ray-AABB intersection (slab method)
-            glm::vec3 tMin = (group.boundingBoxMin - localOrigin) / localDir;
-            glm::vec3 tMax = (group.boundingBoxMax - localOrigin) / localDir;
+            // Broad-phase cull with local AABB first.
+            if (!rayIntersectsAABB(localOrigin, localDir, group.boundingBoxMin, group.boundingBoxMax)) {
+                continue;
+            }
 
-            // Handle negative direction components
-            glm::vec3 t1 = glm::min(tMin, tMax);
-            glm::vec3 t2 = glm::max(tMin, tMax);
+            // Narrow-phase: triangle raycast for accurate camera collision.
+            const auto& verts = group.collisionVertices;
+            const auto& indices = group.collisionIndices;
+            for (size_t i = 0; i + 2 < indices.size(); i += 3) {
+                const glm::vec3& v0 = verts[indices[i]];
+                const glm::vec3& v1 = verts[indices[i + 1]];
+                const glm::vec3& v2 = verts[indices[i + 2]];
 
-            float tNear = std::max({t1.x, t1.y, t1.z});
-            float tFar = std::min({t2.x, t2.y, t2.z});
+                float t = rayTriangleIntersect(localOrigin, localDir, v0, v1, v2);
+                if (t <= 0.0f) {
+                    // Two-sided collision.
+                    t = rayTriangleIntersect(localOrigin, localDir, v0, v2, v1);
+                }
+                if (t <= 0.0f) continue;
 
-            // Check if ray intersects the box
-            if (tNear <= tFar && tFar > 0.0f) {
-                float hitDist = tNear > 0.0f ? tNear : tFar;
-                if (hitDist > 0.0f && hitDist < closestHit) {
-                    closestHit = hitDist;
+                glm::vec3 localHit = localOrigin + localDir * t;
+                glm::vec3 worldHit = glm::vec3(instance.modelMatrix * glm::vec4(localHit, 1.0f));
+                float worldDist = glm::length(worldHit - origin);
+                if (worldDist > 0.0f && worldDist < closestHit && worldDist <= maxDistance) {
+                    closestHit = worldDist;
                 }
             }
         }
