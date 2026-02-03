@@ -354,7 +354,7 @@ void WMORenderer::render(const Camera& camera, const glm::mat4& view, const glm:
 
     // Render all instances with instance-level culling
     const glm::vec3 camPos = camera.getPosition();
-    const float maxRenderDistance = 3000.0f;  // Don't render WMOs beyond this distance
+    const float maxRenderDistance = 500.0f;  // Reduced for performance
     const float maxRenderDistanceSq = maxRenderDistance * maxRenderDistance;
 
     for (const auto& instance : instances) {
