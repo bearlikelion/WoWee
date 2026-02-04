@@ -295,9 +295,10 @@ void CameraController::update(float deltaTime) {
                     if (m2Renderer) {
                         m2H = m2Renderer->getFloorHeight(x, y, targetPos.z);
                     }
-                    auto base = selectReachableFloor(terrainH, wmoH, targetPos.z, 1.0f);
+                    float stepUpBudget = grounded ? 1.6f : 1.2f;
+                    auto base = selectReachableFloor(terrainH, wmoH, targetPos.z, stepUpBudget);
                     bool fromM2 = false;
-                    if (m2H && *m2H <= targetPos.z + 1.0f && (!base || *m2H > *base)) {
+                    if (m2H && *m2H <= targetPos.z + stepUpBudget && (!base || *m2H > *base)) {
                         base = m2H;
                         fromM2 = true;
                     }
@@ -382,8 +383,9 @@ void CameraController::update(float deltaTime) {
                 if (m2Renderer) {
                     m2H = m2Renderer->getFloorHeight(x, y, targetPos.z);
                 }
-                auto base = selectReachableFloor(terrainH, wmoH, targetPos.z, 1.0f);
-                if (m2H && *m2H <= targetPos.z + 1.0f && (!base || *m2H > *base)) {
+                float stepUpBudget = grounded ? 1.6f : 1.2f;
+                auto base = selectReachableFloor(terrainH, wmoH, targetPos.z, stepUpBudget);
+                if (m2H && *m2H <= targetPos.z + stepUpBudget && (!base || *m2H > *base)) {
                     base = m2H;
                 }
                 return base;
@@ -393,7 +395,9 @@ void CameraController::update(float deltaTime) {
             std::optional<float> groundH;
             constexpr float FOOTPRINT = 0.28f;
             const glm::vec2 offsets[] = {
-                {0.0f, 0.0f}, {FOOTPRINT, 0.0f}, {0.0f, FOOTPRINT}
+                {0.0f, 0.0f},
+                {FOOTPRINT, 0.0f}, {-FOOTPRINT, 0.0f},
+                {0.0f, FOOTPRINT}, {0.0f, -FOOTPRINT}
             };
             for (const auto& o : offsets) {
                 auto h = sampleGround(targetPos.x + o.x, targetPos.y + o.y);

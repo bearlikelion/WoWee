@@ -1067,6 +1067,10 @@ bool WMORenderer::checkWallCollision(const glm::vec3& from, const glm::vec3& to,
         glm::vec3 localFrom = glm::vec3(instance.invModelMatrix * glm::vec4(from, 1.0f));
         glm::vec3 localTo = glm::vec3(instance.invModelMatrix * glm::vec4(to, 1.0f));
         float localFeetZ = localTo.z;
+        // Use a tiny Z threshold so ramp-side logic still triggers with
+        // smoothed ground snapping and small per-step vertical deltas.
+        bool steppingUp = (localTo.z > localFrom.z + 0.005f);
+        bool steppingDown = (localTo.z < localFrom.z - 0.005f);
 
         for (const auto& group : model.groups) {
             // Quick bounding box check
@@ -1100,6 +1104,10 @@ bool WMORenderer::checkWallCollision(const glm::vec3& from, const glm::vec3& to,
                 // Get triangle Z range
                 float triMinZ = std::min({v0.z, v1.z, v2.z});
                 float triMaxZ = std::max({v0.z, v1.z, v2.z});
+                float fromDist = glm::dot(localFrom - v0, normal);
+                float toDist = glm::dot(localTo - v0, normal);
+                bool towardWallMotion = (std::abs(toDist) + 1e-4f < std::abs(fromDist));
+                bool awayFromWallMotion = !towardWallMotion;
 
                 // Only collide with walls in player's vertical range
                 if (triMaxZ < localFeetZ + 0.3f) continue;
@@ -1112,17 +1120,56 @@ bool WMORenderer::checkWallCollision(const glm::vec3& from, const glm::vec3& to,
                 // Ignore short near-vertical side strips around ramps/edges.
                 // These commonly act like invisible side guard rails.
                 float triHeight = triMaxZ - triMinZ;
+                bool likelyRealWall =
+                    (std::abs(normal.z) < 0.20f) &&
+                    (triHeight > 2.4f || triMaxZ > localFeetZ + 2.6f);
+                bool structuralWall =
+                    (triHeight > 1.6f) &&
+                    (triMaxZ > localFeetZ + 1.8f);
                 if (std::abs(normal.z) < 0.25f &&
                     triHeight < 1.8f &&
                     triMaxZ <= localFeetZ + 1.4f) {
                     continue;
                 }
+                // Motion-aware permissive ramp side strips:
+                // keeps side entry/exit from behaving like invisible rails.
+                bool rampSideStrip = false;
+                if (steppingUp) {
+                    rampSideStrip =
+                        (std::abs(normal.z) > 0.02f && std::abs(normal.z) < 0.45f) &&
+                        triMinZ <= localFeetZ + 0.30f &&
+                        triHeight < 3.6f &&
+                        triMaxZ <= localFeetZ + 2.8f;
+                } else if (steppingDown) {
+                    rampSideStrip =
+                        (std::abs(normal.z) > 0.02f && std::abs(normal.z) < 0.65f) &&
+                        triMinZ <= localFeetZ + 0.45f &&
+                        triHeight < 4.5f &&
+                        triMaxZ <= localFeetZ + 3.8f;
+                }
+                // High on ramps, side triangles can span very tall strips and
+                // still behave like side rails. If we're stepping down and
+                // moving away from the wall, don't let them trap movement.
+                if (!rampSideStrip &&
+                    steppingDown &&
+                    awayFromWallMotion &&
+                    std::abs(normal.z) > 0.02f && std::abs(normal.z) < 0.70f &&
+                    triMinZ <= localFeetZ + 0.60f &&
+                    triMaxZ <= localFeetZ + 4.5f &&
+                    localFeetZ >= triMinZ + 0.80f) {
+                    rampSideStrip = true;
+                }
+                if (rampSideStrip && !likelyRealWall && !structuralWall) {
+                    continue;
+                }
                 // Let players run off ramp sides: ignore lower side-wall strips
                 // that sit around foot height and are not true tall building walls.
                 if (std::abs(normal.z) < 0.45f &&
+                    std::abs(normal.z) > 0.05f &&
                     triMinZ <= localFeetZ + 0.20f &&
                     triHeight < 4.0f &&
-                    triMaxZ <= localFeetZ + 4.0f) {
+                    triMaxZ <= localFeetZ + 4.0f &&
+                    !likelyRealWall && !structuralWall) {
                     continue;
                 }
 
@@ -1130,10 +1177,22 @@ bool WMORenderer::checkWallCollision(const glm::vec3& from, const glm::vec3& to,
                 if (triMaxZ <= localFeetZ + stepHeightLimit) continue;  // Treat as step-up, not hard wall
 
                 // Swept test: prevent tunneling when crossing a wall between frames.
-                float fromDist = glm::dot(localFrom - v0, normal);
-                float toDist = glm::dot(localTo - v0, normal);
+                bool shortRampEdgeStrip =
+                    (steppingUp || steppingDown) &&
+                    (std::abs(normal.z) > 0.01f && std::abs(normal.z) < (steppingDown ? 0.50f : 0.30f)) &&
+                    triMinZ <= localFeetZ + (steppingDown ? 0.45f : 0.35f) &&
+                    triHeight < (steppingDown ? 4.2f : 3.0f) &&
+                    triMaxZ <= localFeetZ + (steppingDown ? 3.8f : 3.2f);
                 if ((fromDist > PLAYER_RADIUS && toDist < -PLAYER_RADIUS) ||
                     (fromDist < -PLAYER_RADIUS && toDist > PLAYER_RADIUS)) {
+                    // For true wall-like faces, always block segment crossing.
+                    // Motion-direction heuristics are only for ramp-side stickiness.
+                    if (!towardWallMotion && !likelyRealWall && !structuralWall) {
+                        continue;
+                    }
+                    if (shortRampEdgeStrip && !likelyRealWall && !structuralWall) {
+                        continue;
+                    }
                     float denom = (fromDist - toDist);
                     if (std::abs(denom) > 1e-6f) {
                         float tHit = fromDist / denom;  // Segment param [0,1]
@@ -1172,8 +1231,19 @@ bool WMORenderer::checkWallCollision(const glm::vec3& from, const glm::vec3& to,
                             pushDir2 = glm::normalize(n2);
                         }
 
-                        // Soft pushback avoids hard side-snaps when skimming walls.
-                        pushDist = std::min(0.06f, pushDist * 0.35f);
+                        // Softer push when stepping up near ramp side edges.
+                        bool rampEdgeLike = (std::abs(normal.z) < 0.45f && triHeight < 4.0f);
+                        if (!towardWallMotion && !likelyRealWall && !structuralWall) continue;
+                        if (shortRampEdgeStrip &&
+                            !likelyRealWall && !structuralWall &&
+                            std::abs(toDist) >= std::abs(fromDist) - PLAYER_RADIUS * 0.25f) continue;
+                        float pushScale = 0.35f;
+                        float pushCap = 0.06f;
+                        if (rampEdgeLike && (steppingUp || steppingDown)) {
+                            pushScale = steppingDown ? 0.08f : 0.12f;
+                            pushCap = steppingDown ? 0.015f : 0.022f;
+                        }
+                        pushDist = std::min(pushCap, pushDist * pushScale);
                         if (pushDist <= 0.0f) continue;
                         glm::vec3 pushLocal(pushDir2.x * pushDist, pushDir2.y * pushDist, 0.0f);
 
