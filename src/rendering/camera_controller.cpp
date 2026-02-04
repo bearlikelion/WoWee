@@ -197,8 +197,19 @@ void CameraController::update(float deltaTime) {
         }
         constexpr float MAX_SWIM_DEPTH_FROM_SURFACE = 12.0f;
         bool inWater = false;
-        if (waterH && targetPos.z < *waterH &&
-            ((*waterH - targetPos.z) <= MAX_SWIM_DEPTH_FROM_SURFACE)) {
+        if (waterH && targetPos.z < *waterH) {
+            std::optional<uint16_t> waterType;
+            if (waterRenderer) {
+                waterType = waterRenderer->getWaterTypeAt(targetPos.x, targetPos.y);
+            }
+            bool isOcean = false;
+            if (waterType && *waterType != 0) {
+                isOcean = (((*waterType - 1) % 4) == 1);
+            }
+            bool depthAllowed = isOcean || ((*waterH - targetPos.z) <= MAX_SWIM_DEPTH_FROM_SURFACE);
+            if (!depthAllowed) {
+                inWater = false;
+            } else {
             std::optional<float> terrainH;
             std::optional<float> wmoH;
             std::optional<float> m2H;
@@ -207,7 +218,9 @@ void CameraController::update(float deltaTime) {
             if (m2Renderer) m2H = m2Renderer->getFloorHeight(targetPos.x, targetPos.y, targetPos.z + 1.0f);
             auto floorH = selectHighestFloor(terrainH, wmoH, m2H);
             constexpr float MIN_SWIM_WATER_DEPTH = 1.8f;
-            inWater = floorH && ((*waterH - *floorH) >= MIN_SWIM_WATER_DEPTH);
+            // Ocean is valid even when ground isn't currently resolved (deep water or streaming gaps).
+            inWater = (floorH && ((*waterH - *floorH) >= MIN_SWIM_WATER_DEPTH)) || (isOcean && !floorH);
+            }
         }
 
 
@@ -678,8 +691,19 @@ void CameraController::update(float deltaTime) {
         }
         constexpr float MAX_SWIM_DEPTH_FROM_SURFACE = 12.0f;
         bool inWater = false;
-        if (waterH && feetZ < *waterH &&
-            ((*waterH - feetZ) <= MAX_SWIM_DEPTH_FROM_SURFACE)) {
+        if (waterH && feetZ < *waterH) {
+            std::optional<uint16_t> waterType;
+            if (waterRenderer) {
+                waterType = waterRenderer->getWaterTypeAt(newPos.x, newPos.y);
+            }
+            bool isOcean = false;
+            if (waterType && *waterType != 0) {
+                isOcean = (((*waterType - 1) % 4) == 1);
+            }
+            bool depthAllowed = isOcean || ((*waterH - feetZ) <= MAX_SWIM_DEPTH_FROM_SURFACE);
+            if (!depthAllowed) {
+                inWater = false;
+            } else {
             std::optional<float> terrainH;
             std::optional<float> wmoH;
             std::optional<float> m2H;
@@ -688,7 +712,8 @@ void CameraController::update(float deltaTime) {
             if (m2Renderer) m2H = m2Renderer->getFloorHeight(newPos.x, newPos.y, feetZ + 1.0f);
             auto floorH = selectHighestFloor(terrainH, wmoH, m2H);
             constexpr float MIN_SWIM_WATER_DEPTH = 1.8f;
-            inWater = floorH && ((*waterH - *floorH) >= MIN_SWIM_WATER_DEPTH);
+            inWater = (floorH && ((*waterH - *floorH) >= MIN_SWIM_WATER_DEPTH)) || (isOcean && !floorH);
+            }
         }
 
 
