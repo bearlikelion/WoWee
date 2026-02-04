@@ -157,8 +157,8 @@ void CameraController::update(float deltaTime) {
 
     if (nowForward) movement += forward;
     if (nowBackward) movement -= forward;
-    if (nowStrafeLeft) movement -= right;
-    if (nowStrafeRight) movement += right;
+    if (nowStrafeLeft) movement += right;
+    if (nowStrafeRight) movement -= right;
 
     // Stand up if jumping while crouched
     if (!uiWantsKeyboard && sitting && input.isKeyPressed(SDL_SCANCODE_SPACE)) {
@@ -186,12 +186,31 @@ void CameraController::update(float deltaTime) {
 
         if (inWater) {
             swimming = true;
-            // Reduce horizontal speed while swimming
+            // Swim movement follows look pitch (forward/back), while strafe stays
+            // lateral for stable control.
             float swimSpeed = speed * SWIM_SPEED_FACTOR;
 
-            if (glm::length(movement) > 0.001f) {
-                movement = glm::normalize(movement);
-                targetPos += movement * swimSpeed * deltaTime;
+            glm::vec3 swimForward = glm::normalize(forward3D);
+            if (glm::length(swimForward) < 1e-4f) {
+                swimForward = forward;
+            }
+            glm::vec3 swimRight = camera->getRight();
+            swimRight.z = 0.0f;
+            if (glm::length(swimRight) > 1e-4f) {
+                swimRight = glm::normalize(swimRight);
+            } else {
+                swimRight = right;
+            }
+
+            glm::vec3 swimMove(0.0f);
+            if (nowForward) swimMove += swimForward;
+            if (nowBackward) swimMove -= swimForward;
+            if (nowStrafeLeft) swimMove -= swimRight;
+            if (nowStrafeRight) swimMove += swimRight;
+
+            if (glm::length(swimMove) > 0.001f) {
+                swimMove = glm::normalize(swimMove);
+                targetPos += swimMove * swimSpeed * deltaTime;
             }
 
             // Spacebar = swim up (continuous, not a jump)
@@ -232,6 +251,42 @@ void CameraController::update(float deltaTime) {
                     targetPos.z = swimFloor;
                     if (verticalVelocity < 0.0f) verticalVelocity = 0.0f;
                 }
+            }
+
+            // Enforce collision while swimming too (horizontal only), so we don't
+            // pass through walls/props when underwater or at waterline.
+            {
+                glm::vec3 swimFrom = *followTarget;
+                glm::vec3 swimTo = targetPos;
+                float swimMoveDist = glm::length(swimTo - swimFrom);
+                int swimSteps = std::max(1, std::min(12, static_cast<int>(std::ceil(swimMoveDist / 0.22f))));
+                glm::vec3 stepPos = swimFrom;
+                glm::vec3 stepDelta = (swimTo - swimFrom) / static_cast<float>(swimSteps);
+
+                for (int i = 0; i < swimSteps; i++) {
+                    glm::vec3 candidate = stepPos + stepDelta;
+
+                    if (wmoRenderer) {
+                        glm::vec3 adjusted;
+                        if (wmoRenderer->checkWallCollision(stepPos, candidate, adjusted)) {
+                            candidate.x = adjusted.x;
+                            candidate.y = adjusted.y;
+                        }
+                    }
+
+                    if (m2Renderer) {
+                        glm::vec3 adjusted;
+                        if (m2Renderer->checkCollision(stepPos, candidate, adjusted)) {
+                            candidate.x = adjusted.x;
+                            candidate.y = adjusted.y;
+                        }
+                    }
+
+                    stepPos = candidate;
+                }
+
+                targetPos.x = stepPos.x;
+                targetPos.y = stepPos.y;
             }
 
             grounded = false;
