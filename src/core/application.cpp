@@ -108,43 +108,8 @@ bool Application::initialize() {
 void Application::run() {
     LOG_INFO("Starting main loop");
 
-    // Show loading screen while loading initial data
-    rendering::LoadingScreen loadingScreen;
-    if (loadingScreen.initialize()) {
-        // Render loading screen
-        loadingScreen.setStatus("Initializing...");
-        loadingScreen.render();
-        window->swapBuffers();
-
-        // Load terrain data
-        if (assetManager && assetManager->isInitialized() && renderer) {
-            loadingScreen.setStatus("Loading terrain...");
-            loadingScreen.render();
-            window->swapBuffers();
-
-            renderer->loadTestTerrain(assetManager.get(), "World\\Maps\\Azeroth\\Azeroth_32_49.adt");
-
-            loadingScreen.setStatus("Spawning character...");
-            loadingScreen.render();
-            window->swapBuffers();
-
-            // Spawn player character with third-person camera
-            spawnPlayerCharacter();
-        }
-
-        loadingScreen.setStatus("Ready!");
-        loadingScreen.render();
-        window->swapBuffers();
-        SDL_Delay(500);  // Brief pause to show "Ready!"
-
-        loadingScreen.shutdown();
-    } else {
-        // Fallback: load without loading screen
-        if (assetManager && assetManager->isInitialized() && renderer) {
-            renderer->loadTestTerrain(assetManager.get(), "World\\Maps\\Azeroth\\Azeroth_32_49.adt");
-            spawnPlayerCharacter();
-        }
-    }
+    // Terrain and character are loaded via startSinglePlayer() when the user
+    // picks single-player mode, so nothing is preloaded here.
 
     auto lastTime = std::chrono::high_resolution_clock::now();
 
@@ -653,8 +618,17 @@ void Application::spawnPlayerCharacter() {
         LOG_INFO("Loaded fallback cube model (no MPQ data)");
     }
 
-    // Spawn character at camera's ground position
-    glm::vec3 spawnPos = camera->getPosition() - glm::vec3(0.0f, 0.0f, 5.0f);
+    // Spawn character at the camera controller's default position (matches hearthstone),
+    // but snap Z to actual terrain height so the character doesn't float.
+    auto* camCtrl = renderer->getCameraController();
+    glm::vec3 spawnPos = camCtrl ? camCtrl->getDefaultPosition()
+                                 : (camera->getPosition() - glm::vec3(0.0f, 0.0f, 5.0f));
+    if (renderer->getTerrainManager()) {
+        auto terrainH = renderer->getTerrainManager()->getHeightAt(spawnPos.x, spawnPos.y);
+        if (terrainH) {
+            spawnPos.z = *terrainH + 0.1f;
+        }
+    }
     uint32_t instanceId = charRenderer->createInstance(1, spawnPos,
         glm::vec3(0.0f), 1.0f);  // Scale 1.0 = normal WoW character size
 
@@ -861,16 +835,6 @@ void Application::startSinglePlayer() {
         LOG_INFO("Single-player world created");
     }
 
-    // Set up camera for single-player mode
-    if (renderer && renderer->getCamera()) {
-        auto* camera = renderer->getCamera();
-        // Position: high above terrain to see landscape (terrain around origin is ~80-100 units high)
-        camera->setPosition(glm::vec3(0.0f, 0.0f, 300.0f));  // 300 units up
-        // Rotation: looking north (yaw 0) with downward tilt to see terrain
-        camera->setRotation(0.0f, -30.0f);  // Look down more to see terrain below
-        LOG_INFO("Camera positioned for single-player mode");
-    }
-
     // Populate test inventory for single-player
     if (gameHandler) {
         gameHandler->getInventory().populateTestItems();
@@ -879,134 +843,106 @@ void Application::startSinglePlayer() {
     // Load weapon models for equipped items (after inventory is populated)
     loadEquippedWeapons();
 
+    // --- Loading screen: load terrain and wait for streaming before spawning ---
+    rendering::LoadingScreen loadingScreen;
+    bool loadingScreenOk = loadingScreen.initialize();
+
+    auto showStatus = [&](const char* msg) {
+        if (!loadingScreenOk) return;
+        loadingScreen.setStatus(msg);
+        loadingScreen.render();
+        window->swapBuffers();
+    };
+
+    showStatus("Loading terrain...");
+
     // Try to load test terrain if WOW_DATA_PATH is set
+    bool terrainOk = false;
     if (renderer && assetManager && assetManager->isInitialized()) {
-        LOG_INFO("Loading test terrain for single-player mode...");
-
-        // Try to load Elwynn Forest (most common starting zone)
-        // ADT coordinates: (32, 49) is near Northshire Abbey
         std::string adtPath = "World\\Maps\\Azeroth\\Azeroth_32_49.adt";
-
-        if (renderer->loadTestTerrain(assetManager.get(), adtPath)) {
-            LOG_INFO("Test terrain loaded successfully");
-        } else {
-            LOG_WARNING("Could not load test terrain - continuing with atmospheric rendering only");
-            LOG_INFO("Set WOW_DATA_PATH environment variable to load terrain");
+        terrainOk = renderer->loadTestTerrain(assetManager.get(), adtPath);
+        if (!terrainOk) {
+            LOG_WARNING("Could not load test terrain - atmospheric rendering only");
         }
-    } else {
-        LOG_INFO("Asset manager not available - atmospheric rendering only");
-        LOG_INFO("Set WOW_DATA_PATH environment variable to enable terrain loading");
     }
 
-    // Spawn test objects for single-player mode
-    if (renderer) {
-        LOG_INFO("Spawning test objects for single-player mode...");
+    // Wait for surrounding terrain tiles to stream in
+    if (terrainOk && renderer->getTerrainManager() && renderer->getCamera()) {
+        auto* terrainMgr = renderer->getTerrainManager();
+        auto* camera = renderer->getCamera();
 
-        // Spawn test characters in a row
-        auto* characterRenderer = renderer->getCharacterRenderer();
-        if (characterRenderer) {
-            // Create test character model (same as K key)
-            pipeline::M2Model testModel;
-            float size = 2.0f;
-            std::vector<glm::vec3> cubePos = {
-                {-size, -size, -size}, { size, -size, -size},
-                { size,  size, -size}, {-size,  size, -size},
-                {-size, -size,  size}, { size, -size,  size},
-                { size,  size,  size}, {-size,  size,  size}
-            };
+        // First update with large dt to trigger streamTiles() immediately
+        terrainMgr->update(*camera, 1.0f);
 
-            for (const auto& pos : cubePos) {
-                pipeline::M2Vertex v;
-                v.position = pos;
-                v.normal = glm::normalize(pos);
-                v.texCoords[0] = glm::vec2(0.0f);
-                v.boneWeights[0] = 255;
-                v.boneWeights[1] = v.boneWeights[2] = v.boneWeights[3] = 0;
-                v.boneIndices[0] = 0;
-                v.boneIndices[1] = v.boneIndices[2] = v.boneIndices[3] = 0;
-                testModel.vertices.push_back(v);
-            }
+        auto startTime = std::chrono::high_resolution_clock::now();
+        const float maxWaitSeconds = 15.0f;
 
-            // One bone at origin
-            pipeline::M2Bone bone;
-            bone.keyBoneId = -1;
-            bone.flags = 0;
-            bone.parentBone = -1;
-            bone.submeshId = 0;
-            bone.pivot = glm::vec3(0.0f);
-            testModel.bones.push_back(bone);
-
-            // Simple animation
-            pipeline::M2Sequence seq{};
-            seq.id = 0;
-            seq.duration = 1000;
-            testModel.sequences.push_back(seq);
-
-            // Load model into renderer
-            if (characterRenderer->loadModel(testModel, 1)) {
-                // Spawn 5 characters in a row
-                for (int i = 0; i < 5; i++) {
-                    glm::vec3 pos(i * 15.0f - 30.0f, 80.0f, 0.0f);
-                    characterRenderer->createInstance(1, pos);
+        while (terrainMgr->getPendingTileCount() > 0) {
+            // Poll events to keep window responsive
+            SDL_Event event;
+            while (SDL_PollEvent(&event)) {
+                if (event.type == SDL_QUIT) {
+                    window->setShouldClose(true);
+                    loadingScreen.shutdown();
+                    return;
                 }
-                LOG_INFO("Spawned 5 test characters");
             }
+
+            // Process ready tiles from worker threads
+            terrainMgr->update(*camera, 0.016f);
+
+            // Update loading screen with progress
+            if (loadingScreenOk) {
+                int loaded = terrainMgr->getLoadedTileCount();
+                int pending = terrainMgr->getPendingTileCount();
+                char buf[128];
+                snprintf(buf, sizeof(buf), "Loading terrain... %d tiles loaded, %d remaining",
+                         loaded, pending);
+                loadingScreen.setStatus(buf);
+                loadingScreen.render();
+                window->swapBuffers();
+            }
+
+            // Timeout safety
+            auto elapsed = std::chrono::high_resolution_clock::now() - startTime;
+            if (std::chrono::duration<float>(elapsed).count() > maxWaitSeconds) {
+                LOG_WARNING("Terrain streaming timeout after ", maxWaitSeconds, "s");
+                break;
+            }
+
+            SDL_Delay(16);  // ~60fps cap for loading screen
         }
 
-        // Spawn test buildings in a grid
-        auto* wmoRenderer = renderer->getWMORenderer();
-        if (wmoRenderer) {
-            // Create procedural test WMO if not already loaded
-            pipeline::WMOModel testWMO;
-            testWMO.version = 17;
+        LOG_INFO("Terrain streaming complete: ", terrainMgr->getLoadedTileCount(), " tiles loaded");
 
-            pipeline::WMOGroup group;
-            group.vertices = {
-                {{-5, -5, 0}, {0, 0, 1}, {0, 0}, {0.8f, 0.7f, 0.6f, 1.0f}},
-                {{5, -5, 0}, {0, 0, 1}, {1, 0}, {0.8f, 0.7f, 0.6f, 1.0f}},
-                {{5, 5, 0}, {0, 0, 1}, {1, 1}, {0.8f, 0.7f, 0.6f, 1.0f}},
-                {{-5, 5, 0}, {0, 0, 1}, {0, 1}, {0.8f, 0.7f, 0.6f, 1.0f}},
-                {{-5, -5, 10}, {0, 0, 1}, {0, 0}, {0.7f, 0.6f, 0.5f, 1.0f}},
-                {{5, -5, 10}, {0, 0, 1}, {1, 0}, {0.7f, 0.6f, 0.5f, 1.0f}},
-                {{5, 5, 10}, {0, 0, 1}, {1, 1}, {0.7f, 0.6f, 0.5f, 1.0f}},
-                {{-5, 5, 10}, {0, 0, 1}, {0, 1}, {0.7f, 0.6f, 0.5f, 1.0f}}
-            };
-
-            pipeline::WMOBatch batch;
-            batch.startIndex = 0;
-            batch.indexCount = 36;
-            batch.materialId = 0;
-            group.batches.push_back(batch);
-
-            group.indices = {
-                0,1,2, 0,2,3, 4,6,5, 4,7,6,
-                0,4,5, 0,5,1, 1,5,6, 1,6,2,
-                2,6,7, 2,7,3, 3,7,4, 3,4,0
-            };
-
-            testWMO.groups.push_back(group);
-
-            pipeline::WMOMaterial material;
-            material.shader = 0;
-            material.blendMode = 0;
-            testWMO.materials.push_back(material);
-
-            // Load the test model
-            if (wmoRenderer->loadModel(testWMO, 1)) {
-                // Spawn buildings in a grid pattern
-                for (int x = -1; x <= 1; x++) {
-                    for (int y = 0; y <= 2; y++) {
-                        glm::vec3 pos(x * 30.0f, y * 30.0f + 120.0f, 0.0f);
-                        wmoRenderer->createInstance(1, pos);
-                    }
-                }
-                LOG_INFO("Spawned 9 test buildings");
-            }
+        // Re-snap camera to ground now that all surrounding tiles are loaded
+        // (the initial reset inside loadTestTerrain only had 1 tile)
+        if (renderer->getCameraController()) {
+            renderer->getCameraController()->reset();
         }
+    }
 
-        LOG_INFO("Test objects spawned - you should see characters and buildings");
-        LOG_INFO("Use WASD to fly around, mouse to look");
-        LOG_INFO("Press K for more characters, O for more buildings");
+    showStatus("Spawning character...");
+
+    // Spawn player character on loaded terrain
+    spawnPlayerCharacter();
+
+    // Final camera reset: now that follow target exists and terrain is loaded,
+    // snap the third-person camera into the correct orbit position.
+    if (renderer && renderer->getCameraController()) {
+        renderer->getCameraController()->reset();
+    }
+
+    if (loadingScreenOk) {
+        loadingScreen.shutdown();
+    }
+
+    // Wire hearthstone to camera reset (teleport home) in single-player
+    if (gameHandler && renderer && renderer->getCameraController()) {
+        auto* camCtrl = renderer->getCameraController();
+        gameHandler->setHearthstoneCallback([camCtrl]() {
+            camCtrl->reset();
+        });
     }
 
     // Go directly to game

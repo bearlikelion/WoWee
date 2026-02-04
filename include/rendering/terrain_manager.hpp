@@ -183,6 +183,7 @@ public:
      * Get statistics
      */
     int getLoadedTileCount() const { return static_cast<int>(loadedTiles.size()); }
+    int getPendingTileCount() const { return static_cast<int>(pendingTiles.size()); }
     TileCoord getCurrentTile() const { return currentTile; }
 
 private:
@@ -247,8 +248,8 @@ private:
 
     // Streaming parameters
     bool streamingEnabled = true;
-    int loadRadius = 1;      // Load tiles within this radius (3x3 grid for better CPU/GPU perf)
-    int unloadRadius = 2;    // Unload tiles beyond this radius
+    int loadRadius = 2;      // Load tiles within this radius (5x5 grid)
+    int unloadRadius = 3;    // Unload tiles beyond this radius
     float updateInterval = 0.1f;  // Check streaming every 0.1 seconds
     float timeSinceLastUpdate = 0.0f;
 

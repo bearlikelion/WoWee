@@ -204,6 +204,10 @@ public:
     const std::vector<AuraSlot>& getPlayerAuras() const { return playerAuras; }
     const std::vector<AuraSlot>& getTargetAuras() const { return targetAuras; }
 
+    // Hearthstone callback (single-player teleport)
+    using HearthstoneCallback = std::function<void()>;
+    void setHearthstoneCallback(HearthstoneCallback cb) { hearthstoneCallback = std::move(cb); }
+
     // Cooldowns
     float getSpellCooldown(uint32_t spellId) const;
 
@@ -432,6 +436,7 @@ private:
     std::vector<CombatTextEntry> combatText;
 
     // ---- Phase 3: Spells ----
+    HearthstoneCallback hearthstoneCallback;
     std::vector<uint32_t> knownSpells;
     std::unordered_map<uint32_t, float> spellCooldowns;    // spellId -> remaining seconds
     uint8_t castCount = 0;

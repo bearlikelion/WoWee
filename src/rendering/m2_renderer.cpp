@@ -29,7 +29,18 @@ void getTightCollisionBounds(const M2ModelGPU& model, glm::vec3& outMin, glm::ve
     //   larger than default to prevent walk-through on narrow objects
     // - default: tighter fit (avoid oversized blockers)
     // - stepped low platforms (tree curbs/planters): wider XY + lower Z
-    if (model.collisionNarrowVerticalProp) {
+    if (model.collisionTreeTrunk) {
+        // Tree trunk: proportional cylinder at the base of the tree.
+        float modelHoriz = std::max(model.boundMax.x - model.boundMin.x,
+                                    model.boundMax.y - model.boundMin.y);
+        float trunkHalf = std::clamp(modelHoriz * 0.05f, 0.5f, 5.0f);
+        half.x = trunkHalf;
+        half.y = trunkHalf;
+        // Height proportional to trunk width, capped at 3.5 units.
+        half.z = std::min(trunkHalf * 2.5f, 3.5f);
+        // Shift center down so collision is at the base (trunk), not mid-canopy.
+        center.z = model.boundMin.z + half.z;
+    } else if (model.collisionNarrowVerticalProp) {
         // Tall thin props (lamps/posts): keep passable gaps near walls.
         half.x *= 0.30f;
         half.y *= 0.30f;
@@ -396,19 +407,19 @@ bool M2Renderer::loadModel(const pipeline::M2Model& model, uint32_t modelId) {
             (lowerName.find("flower") != std::string::npos) ||
             (lowerName.find("shrub") != std::string::npos) ||
             (lowerName.find("fern") != std::string::npos) ||
-            (lowerName.find("vine") != std::string::npos);
-        bool canopyLike =
-            (lowerName.find("canopy") != std::string::npos) ||
-            (lowerName.find("leaf") != std::string::npos) ||
-            (lowerName.find("leaves") != std::string::npos);
+            (lowerName.find("vine") != std::string::npos) ||
+            (lowerName.find("lily") != std::string::npos) ||
+            (lowerName.find("weed") != std::string::npos);
         bool treeLike = (lowerName.find("tree") != std::string::npos);
         bool hardTreePart =
             (lowerName.find("trunk") != std::string::npos) ||
             (lowerName.find("stump") != std::string::npos) ||
             (lowerName.find("log") != std::string::npos);
-        bool softTree = treeLike && !hardTreePart && (canopyLike || vert > horiz * 1.35f);
-        bool smallSoftShape = (horiz < 2.2f && vert < 2.4f);
-        bool mediumFoliageShape = (horiz < 4.5f && vert < 4.5f);
+        // Only large trees (canopy > 20 model units wide) get trunk collision.
+        // Small/mid trees are walkthrough to avoid getting stuck between them.
+        // Only large trees get trunk collision; all smaller trees are walkthrough.
+        bool treeWithTrunk = treeLike && !hardTreePart && !foliageName && horiz > 40.0f;
+        bool softTree = treeLike && !hardTreePart && !treeWithTrunk;
         bool forceSolidCurb = gpuModel.collisionSteppedLowPlatform || knownStormwindPlanter || likelyCurbName || gpuModel.collisionPlanter;
         bool narrowVerticalName =
             (lowerName.find("lamp") != std::string::npos) ||
@@ -417,6 +428,7 @@ bool M2Renderer::loadModel(const pipeline::M2Model& model, uint32_t modelId) {
             (lowerName.find("pole") != std::string::npos);
         bool narrowVerticalShape =
             (horiz > 0.12f && horiz < 2.0f && vert > 2.2f && vert > horiz * 1.8f);
+        gpuModel.collisionTreeTrunk = treeWithTrunk;
         gpuModel.collisionNarrowVerticalProp =
             !gpuModel.collisionSteppedFountain &&
             !gpuModel.collisionSteppedLowPlatform &&
@@ -435,10 +447,11 @@ bool M2Renderer::loadModel(const pipeline::M2Model& model, uint32_t modelId) {
             !gpuModel.collisionSteppedFountain &&
             !gpuModel.collisionSteppedLowPlatform &&
             !gpuModel.collisionNarrowVerticalProp &&
+            !gpuModel.collisionTreeTrunk &&
             !curbLikeName &&
             !lowPlatformLikeShape &&
             (smallSolidPropName || (genericSolidPropShape && !foliageName && !softTree));
-        gpuModel.collisionNoBlock = ((((foliageName && smallSoftShape) || (foliageName && mediumFoliageShape)) || softTree) &&
+        gpuModel.collisionNoBlock = ((foliageName || softTree) &&
                                      !forceSolidCurb);
     }
     gpuModel.boundMin = tightMin;
@@ -883,7 +896,7 @@ void M2Renderer::render(const Camera& camera, const glm::mat4& view, const glm::
     lastDrawCallCount = 0;
 
     // Adaptive render distance: shorter in dense areas (cities), longer in open terrain
-    const float maxRenderDistance = (instances.size() > 600) ? 180.0f : 350.0f;
+    const float maxRenderDistance = (instances.size() > 600) ? 180.0f : 2000.0f;
     const float maxRenderDistanceSq = maxRenderDistance * maxRenderDistance;
     const float fadeStartFraction = 0.75f;
     const glm::vec3 camPos = camera.getPosition();

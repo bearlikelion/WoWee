@@ -310,7 +310,7 @@ std::unique_ptr<PendingTile> TerrainManager::prepareTile(int x, int y) {
                 p.rotation = glm::vec3(
                     -placement.rotation[2] * 3.14159f / 180.0f,
                     -placement.rotation[0] * 3.14159f / 180.0f,
-                    placement.rotation[1] * 3.14159f / 180.0f
+                    (placement.rotation[1] + 180.0f) * 3.14159f / 180.0f
                 );
                 p.scale = placement.scale / 1024.0f;
                 pending->m2Placements.push_back(p);

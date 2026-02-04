@@ -154,8 +154,8 @@ void CameraController::update(float deltaTime) {
     glm::vec3 forward(std::cos(moveYawRad), std::sin(moveYawRad), 0.0f);
     glm::vec3 right(-std::sin(moveYawRad), std::cos(moveYawRad), 0.0f);
 
-    // Toggle sit/crouch with X or C key (edge-triggered) — only when UI doesn't want keyboard
-    bool xDown = !uiWantsKeyboard && (input.isKeyPressed(SDL_SCANCODE_X) || input.isKeyPressed(SDL_SCANCODE_C));
+    // Toggle sit/crouch with X key (edge-triggered) — only when UI doesn't want keyboard
+    bool xDown = !uiWantsKeyboard && input.isKeyPressed(SDL_SCANCODE_X);
     if (xDown && !xKeyWasDown) {
         sitting = !sitting;
     }
@@ -190,37 +190,16 @@ void CameraController::update(float deltaTime) {
             m2Renderer->setCollisionFocus(targetPos, COLLISION_FOCUS_RADIUS_THIRD_PERSON);
         }
 
-        // Check for water at current position
+        // Check for water at current position — simple submersion test.
+        // If the player's feet are meaningfully below the water surface, swim.
         std::optional<float> waterH;
         if (waterRenderer) {
             waterH = waterRenderer->getWaterHeightAt(targetPos.x, targetPos.y);
         }
-        constexpr float MAX_SWIM_DEPTH_FROM_SURFACE = 12.0f;
-        bool inWater = false;
-        if (waterH && targetPos.z < *waterH) {
-            std::optional<uint16_t> waterType;
-            if (waterRenderer) {
-                waterType = waterRenderer->getWaterTypeAt(targetPos.x, targetPos.y);
-            }
-            bool isOcean = false;
-            if (waterType && *waterType != 0) {
-                isOcean = (((*waterType - 1) % 4) == 1);
-            }
-            bool depthAllowed = isOcean || ((*waterH - targetPos.z) <= MAX_SWIM_DEPTH_FROM_SURFACE);
-            if (!depthAllowed) {
-                inWater = false;
-            } else {
-            std::optional<float> terrainH;
-            std::optional<float> wmoH;
-            std::optional<float> m2H;
-            if (terrainManager) terrainH = terrainManager->getHeightAt(targetPos.x, targetPos.y);
-            if (wmoRenderer) wmoH = wmoRenderer->getFloorHeight(targetPos.x, targetPos.y, targetPos.z + 6.0f);
-            if (m2Renderer) m2H = m2Renderer->getFloorHeight(targetPos.x, targetPos.y, targetPos.z + 1.0f);
-            auto floorH = selectHighestFloor(terrainH, wmoH, m2H);
-            constexpr float MIN_SWIM_WATER_DEPTH = 1.8f;
-            // Ocean is valid even when ground isn't currently resolved (deep water or streaming gaps).
-            inWater = (floorH && ((*waterH - *floorH) >= MIN_SWIM_WATER_DEPTH)) || (isOcean && !floorH);
-            }
+        bool inWater = waterH && (targetPos.z < (*waterH - 0.3f));
+        // Keep swimming through water-data gaps (chunk boundaries).
+        if (!inWater && swimming && !waterH) {
+            inWater = true;
         }
 
 
@@ -298,7 +277,7 @@ void CameraController::update(float deltaTime) {
                 if (mh && (!floorH || *mh > *floorH)) floorH = mh;
             }
             if (floorH) {
-                float swimFloor = *floorH + 0.30f;
+                float swimFloor = *floorH + 0.5f;
                 if (targetPos.z < swimFloor) {
                     targetPos.z = swimFloor;
                     if (verticalVelocity < 0.0f) verticalVelocity = 0.0f;
@@ -343,6 +322,7 @@ void CameraController::update(float deltaTime) {
 
             grounded = false;
         } else {
+            // Exiting water — give a small upward boost to help climb onto shore.
             swimming = false;
 
             if (glm::length(movement) > 0.001f) {
@@ -350,11 +330,20 @@ void CameraController::update(float deltaTime) {
                 targetPos += movement * speed * deltaTime;
             }
 
-            // Jump
-            if (nowJump && grounded) {
+            // Jump with input buffering and coyote time
+            if (nowJump) jumpBufferTimer = JUMP_BUFFER_TIME;
+            if (grounded) coyoteTimer = COYOTE_TIME;
+
+            bool canJump = (coyoteTimer > 0.0f) && (jumpBufferTimer > 0.0f);
+            if (canJump) {
                 verticalVelocity = jumpVel;
                 grounded = false;
+                jumpBufferTimer = 0.0f;
+                coyoteTimer = 0.0f;
             }
+
+            jumpBufferTimer -= deltaTime;
+            coyoteTimer -= deltaTime;
 
             // Apply gravity
             verticalVelocity += gravity * deltaTime;
@@ -501,7 +490,8 @@ void CameraController::update(float deltaTime) {
         }
 
         // Ground the character to terrain or WMO floor
-        {
+        // Skip entirely while swimming — the swim floor clamp handles vertical bounds.
+        if (!swimming) {
             auto sampleGround = [&](float x, float y) -> std::optional<float> {
                 std::optional<float> terrainH;
                 std::optional<float> wmoH;
@@ -549,15 +539,14 @@ void CameraController::update(float deltaTime) {
                     lastGroundZ = *groundH;
                 }
 
-                if (targetPos.z <= lastGroundZ + 0.1f) {
+                if (targetPos.z <= lastGroundZ + 0.1f && verticalVelocity <= 0.0f) {
                     targetPos.z = lastGroundZ;
                     verticalVelocity = 0.0f;
                     grounded = true;
-                    swimming = false;  // Touching ground = wading, not swimming
-                } else if (!swimming) {
+                } else {
                     grounded = false;
                 }
-            } else if (!swimming) {
+            } else {
                 // No terrain found — hold at last known ground
                 targetPos.z = lastGroundZ;
                 verticalVelocity = 0.0f;
@@ -762,11 +751,19 @@ void CameraController::update(float deltaTime) {
                 newPos += movement * speed * deltaTime;
             }
 
-            // Jump
-            if (nowJump && grounded) {
+            // Jump with input buffering and coyote time
+            if (nowJump) jumpBufferTimer = JUMP_BUFFER_TIME;
+            if (grounded) coyoteTimer = COYOTE_TIME;
+
+            if (coyoteTimer > 0.0f && jumpBufferTimer > 0.0f) {
                 verticalVelocity = jumpVel;
                 grounded = false;
+                jumpBufferTimer = 0.0f;
+                coyoteTimer = 0.0f;
             }
+
+            jumpBufferTimer -= deltaTime;
+            coyoteTimer -= deltaTime;
 
             // Apply gravity
             verticalVelocity += gravity * deltaTime;

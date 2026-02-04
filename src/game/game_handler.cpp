@@ -1101,11 +1101,12 @@ void GameHandler::handleCreatureQueryResponse(network::Packet& packet) {
 // ============================================================
 
 void GameHandler::startAutoAttack(uint64_t targetGuid) {
-    if (state != WorldState::IN_WORLD || !socket) return;
     autoAttacking = true;
     autoAttackTarget = targetGuid;
-    auto packet = AttackSwingPacket::build(targetGuid);
-    socket->send(packet);
+    if (state == WorldState::IN_WORLD && socket) {
+        auto packet = AttackSwingPacket::build(targetGuid);
+        socket->send(packet);
+    }
     LOG_INFO("Starting auto-attack on 0x", std::hex, targetGuid, std::dec);
 }
 
@@ -1204,9 +1205,14 @@ void GameHandler::handleSpellHealLog(network::Packet& packet) {
 // ============================================================
 
 void GameHandler::castSpell(uint32_t spellId, uint64_t targetGuid) {
-    if (state != WorldState::IN_WORLD || !socket) return;
+    // Hearthstone (8690) — handle locally when no server connection (single-player)
+    if (spellId == 8690 && hearthstoneCallback) {
+        LOG_INFO("Hearthstone: teleporting home");
+        hearthstoneCallback();
+        return;
+    }
 
-    // Attack (6603) routes to auto-attack instead of cast
+    // Attack (6603) routes to auto-attack instead of cast (works without server)
     if (spellId == 6603) {
         uint64_t target = targetGuid != 0 ? targetGuid : this->targetGuid;
         if (target != 0) {
@@ -1218,6 +1224,8 @@ void GameHandler::castSpell(uint32_t spellId, uint64_t targetGuid) {
         }
         return;
     }
+
+    if (state != WorldState::IN_WORLD || !socket) return;
 
     if (casting) return; // Already casting
 

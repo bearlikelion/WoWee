@@ -47,6 +47,7 @@ struct M2ModelGPU {
     bool collisionPlanter = false;
     bool collisionSmallSolidProp = false;
     bool collisionNarrowVerticalProp = false;
+    bool collisionTreeTrunk = false;
     bool collisionNoBlock = false;
     bool collisionStatue = false;
 

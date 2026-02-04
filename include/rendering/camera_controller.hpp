@@ -35,6 +35,7 @@ public:
     void reset();
 
     float getMovementSpeed() const { return movementSpeed; }
+    const glm::vec3& getDefaultPosition() const { return defaultPosition; }
     bool isMoving() const;
     float getYaw() const { return yaw; }
     float getFacingYaw() const { return facingYaw; }
@@ -116,6 +117,10 @@ private:
     float lastGroundZ = 0.0f;  // Last known ground height (fallback when no terrain)
     static constexpr float GRAVITY = -30.0f;
     static constexpr float JUMP_VELOCITY = 15.0f;
+    float jumpBufferTimer = 0.0f;   // Time since space was pressed
+    float coyoteTimer = 0.0f;       // Time since last grounded
+    static constexpr float JUMP_BUFFER_TIME = 0.15f;  // 150ms input buffer
+    static constexpr float COYOTE_TIME = 0.10f;        // 100ms grace after leaving ground
 
     // Swimming
     bool swimming = false;
@@ -160,9 +165,9 @@ private:
     static constexpr float WOW_GRAVITY = -19.29f;
     static constexpr float WOW_JUMP_VELOCITY = 7.96f;
 
-    // Default spawn position (Stormwind Trade District)
-    glm::vec3 defaultPosition = glm::vec3(-8830.0f, 640.0f, 200.0f);
-    float defaultYaw = 0.0f;   // Look north toward canals
+    // Default spawn position (Goldshire Inn)
+    glm::vec3 defaultPosition = glm::vec3(-9464.0f, 62.0f, 200.0f);
+    float defaultYaw = 0.0f;
     float defaultPitch = -5.0f;
 };
 
