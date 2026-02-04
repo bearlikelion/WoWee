@@ -224,6 +224,15 @@ public:
     uint32_t getTotalTriangleCount() const;
     uint32_t getDrawCallCount() const { return lastDrawCallCount; }
 
+    void setFog(const glm::vec3& color, float start, float end) {
+        fogColor = color; fogStart = start; fogEnd = end;
+    }
+
+    void setShadowMap(GLuint depthTex, const glm::mat4& lightSpace) {
+        shadowDepthTex = depthTex; lightSpaceMatrix = lightSpace; shadowEnabled = true;
+    }
+    void clearShadowMap() { shadowEnabled = false; }
+
 private:
     pipeline::AssetManager* assetManager = nullptr;
     std::unique_ptr<Shader> shader;
@@ -241,6 +250,16 @@ private:
     // Lighting uniforms
     glm::vec3 lightDir = glm::vec3(0.5f, 0.5f, 1.0f);
     glm::vec3 ambientColor = glm::vec3(0.4f, 0.4f, 0.45f);
+
+    // Fog parameters
+    glm::vec3 fogColor = glm::vec3(0.5f, 0.6f, 0.7f);
+    float fogStart = 400.0f;
+    float fogEnd = 1200.0f;
+
+    // Shadow mapping
+    GLuint shadowDepthTex = 0;
+    glm::mat4 lightSpaceMatrix = glm::mat4(1.0f);
+    bool shadowEnabled = false;
 
     // Optional query-space culling for collision/raycast hot paths.
     bool collisionFocusEnabled = false;

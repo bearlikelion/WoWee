@@ -33,6 +33,7 @@ bool Texture::loadFromMemory(const unsigned char* data, int w, int h, int channe
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
 
     glGenerateMipmap(GL_TEXTURE_2D);
+    applyAnisotropicFiltering();
     glBindTexture(GL_TEXTURE_2D, 0);
 
     return true;
@@ -45,6 +46,23 @@ void Texture::bind(GLuint unit) const {
 
 void Texture::unbind() const {
     glBindTexture(GL_TEXTURE_2D, 0);
+}
+
+void applyAnisotropicFiltering() {
+    static float maxAniso = -1.0f;
+    if (maxAniso < 0.0f) {
+        if (GLEW_EXT_texture_filter_anisotropic) {
+            glGetFloatv(GL_MAX_TEXTURE_MAX_ANISOTROPY_EXT, &maxAniso);
+            if (maxAniso < 1.0f) maxAniso = 1.0f;
+        } else {
+            maxAniso = 0.0f;  // Extension not available
+        }
+    }
+    if (maxAniso > 0.0f) {
+        float desired = 16.0f;
+        float clamped = (desired < maxAniso) ? desired : maxAniso;
+        glTexParameterf(GL_TEXTURE_2D, GL_TEXTURE_MAX_ANISOTROPY_EXT, clamped);
+    }
 }
 
 } // namespace rendering

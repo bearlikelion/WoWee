@@ -77,6 +77,15 @@ public:
 
     size_t getInstanceCount() const { return instances.size(); }
 
+    void setFog(const glm::vec3& color, float start, float end) {
+        fogColor = color; fogStart = start; fogEnd = end;
+    }
+
+    void setShadowMap(GLuint depthTex, const glm::mat4& lightSpace) {
+        shadowDepthTex = depthTex; lightSpaceMatrix = lightSpace; shadowEnabled = true;
+    }
+    void clearShadowMap() { shadowEnabled = false; }
+
 private:
     // GPU representation of M2 model
     struct M2ModelGPU {
@@ -167,6 +176,16 @@ public:
 private:
     std::unique_ptr<Shader> characterShader;
     pipeline::AssetManager* assetManager = nullptr;
+
+    // Fog parameters
+    glm::vec3 fogColor = glm::vec3(0.5f, 0.6f, 0.7f);
+    float fogStart = 400.0f;
+    float fogEnd = 1200.0f;
+
+    // Shadow mapping
+    GLuint shadowDepthTex = 0;
+    glm::mat4 lightSpaceMatrix = glm::mat4(1.0f);
+    bool shadowEnabled = false;
 
     // Texture cache
     std::unordered_map<std::string, GLuint> textureCache;

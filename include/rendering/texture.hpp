@@ -27,5 +27,12 @@ private:
     int height = 0;
 };
 
+/**
+ * Apply anisotropic filtering to the currently bound GL_TEXTURE_2D.
+ * Queries the driver maximum once and caches it. No-op if the extension
+ * is not available.
+ */
+void applyAnisotropicFiltering();
+
 } // namespace rendering
 } // namespace wowee

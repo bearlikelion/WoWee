@@ -92,15 +92,46 @@ bool CharacterRenderer::initialize() {
         uniform vec3 uLightDir;
         uniform vec3 uViewPos;
 
+        uniform vec3 uFogColor;
+        uniform float uFogStart;
+        uniform float uFogEnd;
+
+        uniform sampler2DShadow uShadowMap;
+        uniform mat4 uLightSpaceMatrix;
+        uniform int uShadowEnabled;
+
         out vec4 FragColor;
 
         void main() {
             vec3 normal = normalize(Normal);
             vec3 lightDir = normalize(uLightDir);
 
-            // Simple diffuse lighting
+            // Diffuse lighting
             float diff = max(dot(normal, lightDir), 0.0);
-            vec3 diffuse = diff * vec3(1.0);
+
+            // Blinn-Phong specular
+            vec3 viewDir = normalize(uViewPos - FragPos);
+            vec3 halfDir = normalize(lightDir + viewDir);
+            float spec = pow(max(dot(normal, halfDir), 0.0), 32.0);
+            vec3 specular = spec * vec3(0.2);
+
+            // Shadow mapping
+            float shadow = 1.0;
+            if (uShadowEnabled != 0) {
+                vec4 lsPos = uLightSpaceMatrix * vec4(FragPos, 1.0);
+                vec3 proj = lsPos.xyz / lsPos.w * 0.5 + 0.5;
+                if (proj.z <= 1.0 && proj.x >= 0.0 && proj.x <= 1.0 && proj.y >= 0.0 && proj.y <= 1.0) {
+                    float bias = max(0.005 * (1.0 - abs(dot(normal, lightDir))), 0.001);
+                    shadow = 0.0;
+                    vec2 texelSize = vec2(1.0 / 2048.0);
+                    for (int sx = -1; sx <= 1; sx++) {
+                        for (int sy = -1; sy <= 1; sy++) {
+                            shadow += texture(uShadowMap, vec3(proj.xy + vec2(sx, sy) * texelSize, proj.z - bias));
+                        }
+                    }
+                    shadow /= 9.0;
+                }
+            }
 
             // Ambient
             vec3 ambient = vec3(0.3);
@@ -109,7 +140,13 @@ bool CharacterRenderer::initialize() {
             vec4 texColor = texture(uTexture0, TexCoord);
 
             // Combine
-            vec3 result = (ambient + diffuse) * texColor.rgb;
+            vec3 result = (ambient + (diff * vec3(1.0) + specular) * shadow) * texColor.rgb;
+
+            // Fog
+            float fogDist = length(uViewPos - FragPos);
+            float fogFactor = clamp((uFogEnd - fogDist) / (uFogEnd - uFogStart), 0.0, 1.0);
+            result = mix(uFogColor, result, fogFactor);
+
             FragColor = vec4(result, texColor.a);
         }
     )";
@@ -207,6 +244,7 @@ GLuint CharacterRenderer::loadTexture(const std::string& path) {
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_REPEAT);
     glGenerateMipmap(GL_TEXTURE_2D);
+    applyAnisotropicFiltering();
     glBindTexture(GL_TEXTURE_2D, 0);
 
     textureCache[path] = texId;
@@ -417,6 +455,7 @@ GLuint CharacterRenderer::compositeTextures(const std::vector<std::string>& laye
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_REPEAT);
     glGenerateMipmap(GL_TEXTURE_2D);
+    applyAnisotropicFiltering();
     glBindTexture(GL_TEXTURE_2D, 0);
 
     core::Logger::getInstance().info("Composite texture created: ", width, "x", height, " from ", layerPaths.size(), " layers");
@@ -542,6 +581,7 @@ GLuint CharacterRenderer::compositeWithRegions(const std::string& basePath,
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_REPEAT);
     glGenerateMipmap(GL_TEXTURE_2D);
+    applyAnisotropicFiltering();
     glBindTexture(GL_TEXTURE_2D, 0);
 
     core::Logger::getInstance().info("compositeWithRegions: created ", width, "x", height,
@@ -977,6 +1017,20 @@ void CharacterRenderer::render(const Camera& camera, const glm::mat4& view, cons
     characterShader->setUniform("uProjection", projection);
     characterShader->setUniform("uLightDir", glm::vec3(0.0f, -1.0f, 0.3f));
     characterShader->setUniform("uViewPos", camera.getPosition());
+
+    // Fog
+    characterShader->setUniform("uFogColor", fogColor);
+    characterShader->setUniform("uFogStart", fogStart);
+    characterShader->setUniform("uFogEnd", fogEnd);
+
+    // Shadows
+    characterShader->setUniform("uShadowEnabled", shadowEnabled ? 1 : 0);
+    if (shadowEnabled) {
+        characterShader->setUniform("uLightSpaceMatrix", lightSpaceMatrix);
+        glActiveTexture(GL_TEXTURE7);
+        glBindTexture(GL_TEXTURE_2D, shadowDepthTex);
+        characterShader->setUniform("uShadowMap", 7);
+    }
 
     for (const auto& pair : instances) {
         const auto& instance = pair.second;

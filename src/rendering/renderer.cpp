@@ -921,6 +921,14 @@ void Renderer::renderWorld(game::World* world) {
         lensFlare->render(*camera, sunPosition, timeOfDay);
     }
 
+    // Update fog across all renderers based on time of day (match sky color)
+    if (skybox) {
+        glm::vec3 horizonColor = skybox->getHorizonColor(timeOfDay);
+        if (wmoRenderer) wmoRenderer->setFog(horizonColor, 100.0f, 600.0f);
+        if (m2Renderer) m2Renderer->setFog(horizonColor, 100.0f, 600.0f);
+        if (characterRenderer) characterRenderer->setFog(horizonColor, 100.0f, 600.0f);
+    }
+
     // Render terrain if loaded and enabled
     if (terrainEnabled && terrainLoaded && terrainRenderer && camera) {
         // Check if camera/character is underwater for fog override
@@ -951,7 +959,6 @@ void Renderer::renderWorld(game::World* world) {
         }
 
         if (skybox) {
-            // Update terrain fog based on time of day (match sky color)
             glm::vec3 horizonColor = skybox->getHorizonColor(timeOfDay);
             float fogColorArray[3] = {horizonColor.r, horizonColor.g, horizonColor.b};
             terrainRenderer->setFog(fogColorArray, 400.0f, 1200.0f);

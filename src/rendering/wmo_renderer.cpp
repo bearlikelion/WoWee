@@ -1,4 +1,5 @@
 #include "rendering/wmo_renderer.hpp"
+#include "rendering/texture.hpp"
 #include "rendering/shader.hpp"
 #include "rendering/camera.hpp"
 #include "rendering/frustum.hpp"
@@ -79,6 +80,14 @@ bool WMORenderer::initialize(pipeline::AssetManager* assets) {
         uniform bool uHasTexture;
         uniform bool uAlphaTest;
 
+        uniform vec3 uFogColor;
+        uniform float uFogStart;
+        uniform float uFogEnd;
+
+        uniform sampler2DShadow uShadowMap;
+        uniform mat4 uLightSpaceMatrix;
+        uniform bool uShadowEnabled;
+
         out vec4 FragColor;
 
         void main() {
@@ -92,6 +101,12 @@ bool WMORenderer::initialize(pipeline::AssetManager* assets) {
             // Ambient
             vec3 ambient = uAmbientColor;
 
+            // Blinn-Phong specular
+            vec3 viewDir = normalize(uViewPos - FragPos);
+            vec3 halfDir = normalize(lightDir + viewDir);
+            float spec = pow(max(dot(normal, halfDir), 0.0), 32.0);
+            vec3 specular = spec * vec3(0.15);
+
             // Sample texture or use vertex color
             vec4 texColor;
             if (uHasTexture) {
@@ -103,8 +118,32 @@ bool WMORenderer::initialize(pipeline::AssetManager* assets) {
                 texColor = vec4(VertexColor.rgb, 1.0);
             }
 
+            // Shadow mapping
+            float shadow = 1.0;
+            if (uShadowEnabled) {
+                vec4 lsPos = uLightSpaceMatrix * vec4(FragPos, 1.0);
+                vec3 proj = lsPos.xyz / lsPos.w * 0.5 + 0.5;
+                if (proj.z <= 1.0 && proj.x >= 0.0 && proj.x <= 1.0 && proj.y >= 0.0 && proj.y <= 1.0) {
+                    float bias = max(0.005 * (1.0 - dot(normal, lightDir)), 0.001);
+                    shadow = 0.0;
+                    vec2 texelSize = vec2(1.0 / 2048.0);
+                    for (int sx = -1; sx <= 1; sx++) {
+                        for (int sy = -1; sy <= 1; sy++) {
+                            shadow += texture(uShadowMap, vec3(proj.xy + vec2(sx, sy) * texelSize, proj.z - bias));
+                        }
+                    }
+                    shadow /= 9.0;
+                }
+            }
+
             // Combine lighting with texture
-            vec3 result = (ambient + diffuse) * texColor.rgb;
+            vec3 result = (ambient + (diffuse + specular) * shadow) * texColor.rgb;
+
+            // Fog
+            float fogDist = length(uViewPos - FragPos);
+            float fogFactor = clamp((uFogEnd - fogDist) / (uFogEnd - uFogStart), 0.0, 1.0);
+            result = mix(uFogColor, result, fogFactor);
+
             FragColor = vec4(result, 1.0);
         }
     )";
@@ -452,6 +491,16 @@ void WMORenderer::render(const Camera& camera, const glm::mat4& view, const glm:
     shader->setUniform("uViewPos", camera.getPosition());
     shader->setUniform("uLightDir", glm::vec3(-0.3f, -0.7f, -0.6f));  // Default sun direction
     shader->setUniform("uAmbientColor", glm::vec3(0.4f, 0.4f, 0.5f));
+    shader->setUniform("uFogColor", fogColor);
+    shader->setUniform("uFogStart", fogStart);
+    shader->setUniform("uFogEnd", fogEnd);
+    shader->setUniform("uShadowEnabled", shadowEnabled ? 1 : 0);
+    if (shadowEnabled) {
+        shader->setUniform("uLightSpaceMatrix", lightSpaceMatrix);
+        glActiveTexture(GL_TEXTURE7);
+        glBindTexture(GL_TEXTURE_2D, shadowDepthTex);
+        shader->setUniform("uShadowMap", 7);
+    }
 
     // Enable wireframe if requested
     if (wireframeMode) {
@@ -510,6 +559,28 @@ void WMORenderer::render(const Camera& camera, const glm::mat4& view, const glm:
 
     // Re-enable backface culling
     glEnable(GL_CULL_FACE);
+}
+
+void WMORenderer::renderShadow(const glm::mat4& lightView, const glm::mat4& lightProj, Shader& shadowShader) {
+    if (instances.empty()) return;
+    Frustum frustum;
+    frustum.extractFromMatrix(lightProj * lightView);
+    for (const auto& instance : instances) {
+        auto modelIt = loadedModels.find(instance.modelId);
+        if (modelIt == loadedModels.end()) continue;
+        if (frustumCulling) {
+            glm::vec3 instMin = instance.worldBoundsMin - glm::vec3(0.5f);
+            glm::vec3 instMax = instance.worldBoundsMax + glm::vec3(0.5f);
+            if (!frustum.intersectsAABB(instMin, instMax)) continue;
+        }
+        const ModelData& model = modelIt->second;
+        shadowShader.setUniform("uModel", instance.modelMatrix);
+        for (const auto& group : model.groups) {
+            glBindVertexArray(group.vao);
+            glDrawElements(GL_TRIANGLES, group.indexCount, GL_UNSIGNED_SHORT, 0);
+            glBindVertexArray(0);
+        }
+    }
 }
 
 uint32_t WMORenderer::getTotalTriangleCount() const {
@@ -769,6 +840,7 @@ GLuint WMORenderer::loadTexture(const std::string& path) {
 
     // Set texture parameters with mipmaps
     glGenerateMipmap(GL_TEXTURE_2D);
+    applyAnisotropicFiltering();
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT);

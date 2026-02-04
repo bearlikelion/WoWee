@@ -1,4 +1,5 @@
 #include "rendering/m2_renderer.hpp"
+#include "rendering/texture.hpp"
 #include "rendering/shader.hpp"
 #include "rendering/camera.hpp"
 #include "rendering/frustum.hpp"
@@ -253,10 +254,19 @@ bool M2Renderer::initialize(pipeline::AssetManager* assets) {
 
         uniform vec3 uLightDir;
         uniform vec3 uAmbientColor;
+        uniform vec3 uViewPos;
         uniform sampler2D uTexture;
         uniform bool uHasTexture;
         uniform bool uAlphaTest;
         uniform float uFadeAlpha;
+
+        uniform vec3 uFogColor;
+        uniform float uFogStart;
+        uniform float uFogEnd;
+
+        uniform sampler2DShadow uShadowMap;
+        uniform mat4 uLightSpaceMatrix;
+        uniform bool uShadowEnabled;
 
         out vec4 FragColor;
 
@@ -285,10 +295,40 @@ bool M2Renderer::initialize(pipeline::AssetManager* assets) {
             // Two-sided lighting for foliage
             float diff = max(abs(dot(normal, lightDir)), 0.3);
 
+            // Blinn-Phong specular
+            vec3 viewDir = normalize(uViewPos - FragPos);
+            vec3 halfDir = normalize(lightDir + viewDir);
+            float spec = pow(max(dot(normal, halfDir), 0.0), 32.0);
+            vec3 specular = spec * vec3(0.1);
+
+            // Shadow mapping
+            float shadow = 1.0;
+            if (uShadowEnabled) {
+                vec4 lsPos = uLightSpaceMatrix * vec4(FragPos, 1.0);
+                vec3 proj = lsPos.xyz / lsPos.w * 0.5 + 0.5;
+                if (proj.z <= 1.0 && proj.x >= 0.0 && proj.x <= 1.0 && proj.y >= 0.0 && proj.y <= 1.0) {
+                    float bias = max(0.005 * (1.0 - abs(dot(normal, lightDir))), 0.001);
+                    shadow = 0.0;
+                    vec2 texelSize = vec2(1.0 / 2048.0);
+                    for (int sx = -1; sx <= 1; sx++) {
+                        for (int sy = -1; sy <= 1; sy++) {
+                            shadow += texture(uShadowMap, vec3(proj.xy + vec2(sx, sy) * texelSize, proj.z - bias));
+                        }
+                    }
+                    shadow /= 9.0;
+                }
+            }
+
             vec3 ambient = uAmbientColor * texColor.rgb;
             vec3 diffuse = diff * texColor.rgb;
 
-            vec3 result = ambient + diffuse;
+            vec3 result = ambient + (diffuse + specular) * shadow;
+
+            // Fog
+            float fogDist = length(uViewPos - FragPos);
+            float fogFactor = clamp((uFogEnd - fogDist) / (uFogEnd - uFogStart), 0.0, 1.0);
+            result = mix(uFogColor, result, fogFactor);
+
             FragColor = vec4(result, finalAlpha);
         }
     )";
@@ -1051,8 +1091,6 @@ void M2Renderer::update(float deltaTime) {
 }
 
 void M2Renderer::render(const Camera& camera, const glm::mat4& view, const glm::mat4& projection) {
-    (void)camera;  // unused for now
-
     if (instances.empty() || !shader) {
         return;
     }
@@ -1080,6 +1118,17 @@ void M2Renderer::render(const Camera& camera, const glm::mat4& view, const glm::
     shader->setUniform("uProjection", projection);
     shader->setUniform("uLightDir", lightDir);
     shader->setUniform("uAmbientColor", ambientColor);
+    shader->setUniform("uViewPos", camera.getPosition());
+    shader->setUniform("uFogColor", fogColor);
+    shader->setUniform("uFogStart", fogStart);
+    shader->setUniform("uFogEnd", fogEnd);
+    shader->setUniform("uShadowEnabled", shadowEnabled ? 1 : 0);
+    if (shadowEnabled) {
+        shader->setUniform("uLightSpaceMatrix", lightSpaceMatrix);
+        glActiveTexture(GL_TEXTURE7);
+        glBindTexture(GL_TEXTURE_2D, shadowDepthTex);
+        shader->setUniform("uShadowMap", 7);
+    }
 
     lastDrawCallCount = 0;
 
@@ -1389,6 +1438,7 @@ GLuint M2Renderer::loadTexture(const std::string& path) {
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_REPEAT);
     glGenerateMipmap(GL_TEXTURE_2D);
+    applyAnisotropicFiltering();
 
     glBindTexture(GL_TEXTURE_2D, 0);
 

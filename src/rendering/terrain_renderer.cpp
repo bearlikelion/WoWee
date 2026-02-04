@@ -1,4 +1,5 @@
 #include "rendering/terrain_renderer.hpp"
+#include "rendering/texture.hpp"
 #include "rendering/frustum.hpp"
 #include "pipeline/asset_manager.hpp"
 #include "pipeline/blp_loader.hpp"
@@ -239,6 +240,7 @@ GLuint TerrainRenderer::loadTexture(const std::string& path) {
 
     // Generate mipmaps
     glGenerateMipmap(GL_TEXTURE_2D);
+    applyAnisotropicFiltering();
 
     glBindTexture(GL_TEXTURE_2D, 0);
 

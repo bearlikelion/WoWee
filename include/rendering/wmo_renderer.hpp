@@ -129,6 +129,20 @@ public:
      */
     void setFrustumCulling(bool enabled) { frustumCulling = enabled; }
 
+    void setFog(const glm::vec3& color, float start, float end) {
+        fogColor = color; fogStart = start; fogEnd = end;
+    }
+
+    void setShadowMap(GLuint depthTex, const glm::mat4& lightSpace) {
+        shadowDepthTex = depthTex; lightSpaceMatrix = lightSpace; shadowEnabled = true;
+    }
+    void clearShadowMap() { shadowEnabled = false; }
+
+    /**
+     * Render depth-only for shadow casting (reuses VAOs)
+     */
+    void renderShadow(const glm::mat4& lightView, const glm::mat4& lightProj, Shader& shadowShader);
+
     /**
      * Get floor height at a GL position via ray-triangle intersection
      */
@@ -307,6 +321,16 @@ private:
     bool wireframeMode = false;
     bool frustumCulling = true;
     uint32_t lastDrawCalls = 0;
+
+    // Fog parameters
+    glm::vec3 fogColor = glm::vec3(0.5f, 0.6f, 0.7f);
+    float fogStart = 400.0f;
+    float fogEnd = 1200.0f;
+
+    // Shadow mapping
+    GLuint shadowDepthTex = 0;
+    glm::mat4 lightSpaceMatrix = glm::mat4(1.0f);
+    bool shadowEnabled = false;
 
     // Optional query-space culling for collision/raycast hot paths.
     bool collisionFocusEnabled = false;
