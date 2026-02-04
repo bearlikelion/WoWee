@@ -6,6 +6,7 @@
 #include "pipeline/blp_loader.hpp"
 #include "core/logger.hpp"
 #include <chrono>
+#include <cctype>
 #include <glm/gtc/matrix_transform.hpp>
 #include <glm/gtc/type_ptr.hpp>
 #include <unordered_set>
@@ -22,13 +23,39 @@ void getTightCollisionBounds(const M2ModelGPU& model, glm::vec3& outMin, glm::ve
     glm::vec3 center = (model.boundMin + model.boundMax) * 0.5f;
     glm::vec3 half = (model.boundMax - model.boundMin) * 0.5f;
 
-    // Tighten footprint to reduce overly large object blockers.
-    half.x *= 0.72f;
-    half.y *= 0.72f;
-    half.z *= 0.78f;
+    // Tighter-than-before fit: M2 header bounds are often conservative.
+    // Keep collision closer to visible mesh to avoid oversized blockers.
+    half.x *= 0.66f;
+    half.y *= 0.66f;
+    half.z *= 0.76f;
 
     outMin = center - half;
     outMax = center + half;
+}
+
+float getEffectiveCollisionTopLocal(const M2ModelGPU& model,
+                                    const glm::vec3& localPos,
+                                    const glm::vec3& localMin,
+                                    const glm::vec3& localMax) {
+    if (!model.collisionSteppedFountain) {
+        return localMax.z;
+    }
+
+    glm::vec2 center((localMin.x + localMax.x) * 0.5f, (localMin.y + localMax.y) * 0.5f);
+    glm::vec2 half((localMax.x - localMin.x) * 0.5f, (localMax.y - localMin.y) * 0.5f);
+    if (half.x < 1e-4f || half.y < 1e-4f) {
+        return localMax.z;
+    }
+
+    float nx = (localPos.x - center.x) / half.x;
+    float ny = (localPos.y - center.y) / half.y;
+    float r = std::sqrt(nx * nx + ny * ny);
+
+    float h = localMax.z - localMin.z;
+    if (r > 0.88f) return localMin.z + h * 0.20f;  // outer lip
+    if (r > 0.62f) return localMin.z + h * 0.42f;  // mid step
+    if (r > 0.36f) return localMin.z + h * 0.66f;  // inner step
+    return localMin.z + h * 0.90f;                 // center/top approach
 }
 
 bool segmentIntersectsAABB(const glm::vec3& from, const glm::vec3& to,
@@ -274,6 +301,12 @@ bool M2Renderer::loadModel(const pipeline::M2Model& model, uint32_t modelId) {
 
     M2ModelGPU gpuModel;
     gpuModel.name = model.name;
+    {
+        std::string lowerName = model.name;
+        std::transform(lowerName.begin(), lowerName.end(), lowerName.begin(),
+                       [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+        gpuModel.collisionSteppedFountain = (lowerName.find("fountain") != std::string::npos);
+    }
     // Use tight bounds from actual vertices for collision/camera occlusion.
     // Header bounds in some M2s are overly conservative.
     glm::vec3 tightMin( std::numeric_limits<float>::max());
@@ -787,7 +820,8 @@ std::optional<float> M2Renderer::getFloorHeight(float glX, float glY, float glZ)
         }
 
         // Construct "top" point at queried XY in local space, then transform back.
-        glm::vec3 localTop(localPos.x, localPos.y, localMax.z);
+        float localTopZ = getEffectiveCollisionTopLocal(model, localPos, localMin, localMax);
+        glm::vec3 localTop(localPos.x, localPos.y, localTopZ);
         glm::vec3 worldTop = glm::vec3(instance.modelMatrix * glm::vec4(localTop, 1.0f));
 
         // Reachability filter: only consider floors slightly above current feet.
@@ -837,24 +871,27 @@ bool M2Renderer::checkCollision(const glm::vec3& from, const glm::vec3& to,
         glm::vec3 localPos = glm::vec3(instance.invModelMatrix * glm::vec4(adjustedPos, 1.0f));
         float localRadius = playerRadius / instance.scale;
 
-        glm::vec3 localMin, localMax;
-        getTightCollisionBounds(model, localMin, localMax);
-        localMin -= glm::vec3(localRadius);
-        localMax += glm::vec3(localRadius);
+        glm::vec3 rawMin, rawMax;
+        getTightCollisionBounds(model, rawMin, rawMax);
+        glm::vec3 localMin = rawMin - glm::vec3(localRadius);
+        glm::vec3 localMax = rawMax + glm::vec3(localRadius);
+        float effectiveTop = getEffectiveCollisionTopLocal(model, localPos, rawMin, rawMax) + localRadius;
 
         // Feet-based vertical overlap test: ignore objects fully above/below us.
         constexpr float PLAYER_HEIGHT = 2.0f;
-        if (localPos.z + PLAYER_HEIGHT < localMin.z || localPos.z > localMax.z) {
+        if (localPos.z + PLAYER_HEIGHT < localMin.z || localPos.z > effectiveTop) {
             continue;
         }
 
         // Swept hard clamp for taller blockers only.
         // Low/stepable objects should be climbable and not "shove" the player off.
         constexpr float MAX_STEP_UP = 1.20f;
-        bool stepableLowObject = (localMax.z <= localFrom.z + MAX_STEP_UP);
+        bool stepableLowObject = (effectiveTop <= localFrom.z + MAX_STEP_UP);
         if (!stepableLowObject) {
             float tEnter = 0.0f;
-            if (segmentIntersectsAABB(localFrom, localPos, localMin, localMax, tEnter)) {
+            glm::vec3 sweepMax = localMax;
+            sweepMax.z = std::min(sweepMax.z, effectiveTop);
+            if (segmentIntersectsAABB(localFrom, localPos, localMin, sweepMax, tEnter)) {
                 float tSafe = std::clamp(tEnter - 0.03f, 0.0f, 1.0f);
                 glm::vec3 localSafe = localFrom + (localPos - localFrom) * tSafe;
                 glm::vec3 worldSafe = glm::vec3(instance.modelMatrix * glm::vec4(localSafe, 1.0f));

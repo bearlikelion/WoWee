@@ -42,6 +42,7 @@ struct M2ModelGPU {
     glm::vec3 boundMin;
     glm::vec3 boundMax;
     float boundRadius = 0.0f;
+    bool collisionSteppedFountain = false;
 
     std::string name;
 
