@@ -56,6 +56,7 @@ struct M2ModelGPU {
     std::vector<pipeline::M2Bone> bones;
     std::vector<pipeline::M2Sequence> sequences;
     bool hasAnimation = false;  // True if any bone has keyframes
+    std::vector<int> idleVariationIndices;  // Sequence indices for idle variations (animId 0)
 
     bool isValid() const { return vao != 0 && indexCount > 0; }
 };
@@ -77,10 +78,14 @@ struct M2Instance {
     // Animation state
     float animTime = 0.0f;       // Current animation time (ms)
     float animSpeed = 1.0f;      // Animation playback speed
-    uint32_t animId = 0;         // Current animation sequence
     int currentSequenceIndex = 0;// Index into sequences array
     float animDuration = 0.0f;   // Duration of current animation (ms)
     std::vector<glm::mat4> boneMatrices;
+
+    // Idle variation state
+    int idleSequenceIndex = 0;   // Default idle sequence index
+    float variationTimer = 0.0f; // Time until next variation attempt (ms)
+    bool playingVariation = false;// Currently playing a one-shot variation
 
     void updateModelMatrix();
 };

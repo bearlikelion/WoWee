@@ -462,6 +462,13 @@ bool M2Renderer::loadModel(const pipeline::M2Model& model, uint32_t modelId) {
         }
     }
 
+    // Identify idle variation sequences (animation ID 0 = Stand)
+    for (int i = 0; i < static_cast<int>(model.sequences.size()); i++) {
+        if (model.sequences[i].id == 0 && model.sequences[i].duration > 0) {
+            gpuModel.idleVariationIndices.push_back(i);
+        }
+    }
+
     // Create VBO with interleaved vertex data
     // Format: position (3), normal (3), texcoord (2), boneWeights (4), boneIndices (4 as float)
     const size_t floatsPerVertex = 16;
@@ -587,6 +594,16 @@ uint32_t M2Renderer::createInstance(uint32_t modelId, const glm::vec3& position,
         return 0;
     }
 
+    // Deduplicate: skip if same model already at nearly the same position
+    for (const auto& existing : instances) {
+        if (existing.modelId == modelId) {
+            glm::vec3 d = existing.position - position;
+            if (glm::dot(d, d) < 0.01f) {
+                return existing.id;
+            }
+        }
+    }
+
     M2Instance instance;
     instance.id = nextInstanceId++;
     instance.modelId = modelId;
@@ -602,8 +619,10 @@ uint32_t M2Renderer::createInstance(uint32_t modelId, const glm::vec3& position,
     const auto& mdl = models[modelId];
     if (mdl.hasAnimation && !mdl.sequences.empty()) {
         instance.currentSequenceIndex = 0;
+        instance.idleSequenceIndex = 0;
         instance.animDuration = static_cast<float>(mdl.sequences[0].duration);
         instance.animTime = static_cast<float>(rand() % std::max(1u, mdl.sequences[0].duration));
+        instance.variationTimer = 3000.0f + static_cast<float>(rand() % 8000);
     }
 
     instances.push_back(instance);
@@ -629,6 +648,16 @@ uint32_t M2Renderer::createInstanceWithMatrix(uint32_t modelId, const glm::mat4&
         return 0;
     }
 
+    // Deduplicate: skip if same model already at nearly the same position
+    for (const auto& existing : instances) {
+        if (existing.modelId == modelId) {
+            glm::vec3 d = existing.position - position;
+            if (glm::dot(d, d) < 0.01f) {
+                return existing.id;
+            }
+        }
+    }
+
     M2Instance instance;
     instance.id = nextInstanceId++;
     instance.modelId = modelId;
@@ -640,14 +669,16 @@ uint32_t M2Renderer::createInstanceWithMatrix(uint32_t modelId, const glm::mat4&
     glm::vec3 localMin, localMax;
     getTightCollisionBounds(models[modelId], localMin, localMax);
     transformAABB(instance.modelMatrix, localMin, localMax, instance.worldBoundsMin, instance.worldBoundsMax);
-    // Initialize animation: play first sequence (usually Stand/Idle)
+    // Initialize animation
     const auto& mdl2 = models[modelId];
     if (mdl2.hasAnimation && !mdl2.sequences.empty()) {
         instance.currentSequenceIndex = 0;
+        instance.idleSequenceIndex = 0;
         instance.animDuration = static_cast<float>(mdl2.sequences[0].duration);
         instance.animTime = static_cast<float>(rand() % std::max(1u, mdl2.sequences[0].duration));
+        instance.variationTimer = 3000.0f + static_cast<float>(rand() % 8000);
     } else {
-        instance.animTime = static_cast<float>(rand()) / RAND_MAX * 10.0f;
+        instance.animTime = static_cast<float>(rand()) / RAND_MAX * 10000.0f;
     }
 
     instances.push_back(instance);
@@ -728,7 +759,7 @@ static glm::quat interpQuat(const pipeline::M2AnimationTrack& track,
 }
 
 static void computeBoneMatrices(const M2ModelGPU& model, M2Instance& instance) {
-    size_t numBones = model.bones.size();
+    size_t numBones = std::min(model.bones.size(), size_t(128));
     if (numBones == 0) return;
     instance.boneMatrices.resize(numBones);
 
@@ -737,6 +768,11 @@ static void computeBoneMatrices(const M2ModelGPU& model, M2Instance& instance) {
         glm::vec3 trans = interpVec3(bone.translation, instance.currentSequenceIndex, instance.animTime, glm::vec3(0.0f));
         glm::quat rot = interpQuat(bone.rotation, instance.currentSequenceIndex, instance.animTime);
         glm::vec3 scl = interpVec3(bone.scale, instance.currentSequenceIndex, instance.animTime, glm::vec3(1.0f));
+
+        // Sanity check scale to avoid degenerate matrices
+        if (scl.x < 0.001f) scl.x = 1.0f;
+        if (scl.y < 0.001f) scl.y = 1.0f;
+        if (scl.z < 0.001f) scl.z = 1.0f;
 
         glm::mat4 local = glm::translate(glm::mat4(1.0f), bone.pivot);
         local = glm::translate(local, trans);
@@ -753,19 +789,60 @@ static void computeBoneMatrices(const M2ModelGPU& model, M2Instance& instance) {
 }
 
 void M2Renderer::update(float deltaTime) {
-    float dtMs = deltaTime * 1000.0f;  // Convert to milliseconds for keyframe lookup
+    float dtMs = deltaTime * 1000.0f;
     for (auto& instance : instances) {
-        instance.animTime += dtMs * instance.animSpeed;
-
         auto it = models.find(instance.modelId);
         if (it == models.end()) continue;
         const M2ModelGPU& model = it->second;
 
-        if (!model.hasAnimation) continue;
+        if (!model.hasAnimation) {
+            instance.animTime += dtMs;
+            continue;
+        }
 
-        // Loop animation
+        instance.animTime += dtMs * instance.animSpeed;
+
+        // Validate sequence index
+        if (instance.currentSequenceIndex < 0 ||
+            instance.currentSequenceIndex >= static_cast<int>(model.sequences.size())) {
+            instance.currentSequenceIndex = 0;
+            if (!model.sequences.empty()) {
+                instance.animDuration = static_cast<float>(model.sequences[0].duration);
+            }
+        }
+
+        // Handle animation looping / variation transitions
         if (instance.animDuration > 0.0f && instance.animTime >= instance.animDuration) {
-            instance.animTime = std::fmod(instance.animTime, instance.animDuration);
+            if (instance.playingVariation) {
+                // Variation finished — return to idle
+                instance.playingVariation = false;
+                instance.currentSequenceIndex = instance.idleSequenceIndex;
+                if (instance.idleSequenceIndex < static_cast<int>(model.sequences.size())) {
+                    instance.animDuration = static_cast<float>(model.sequences[instance.idleSequenceIndex].duration);
+                }
+                instance.animTime = 0.0f;
+                instance.variationTimer = 4000.0f + static_cast<float>(rand() % 6000);
+            } else {
+                // Loop idle
+                instance.animTime = std::fmod(instance.animTime, std::max(1.0f, instance.animDuration));
+            }
+        }
+
+        // Idle variation timer — occasionally play a different idle sequence
+        if (!instance.playingVariation && model.idleVariationIndices.size() > 1) {
+            instance.variationTimer -= dtMs;
+            if (instance.variationTimer <= 0.0f) {
+                int pick = rand() % static_cast<int>(model.idleVariationIndices.size());
+                int newSeq = model.idleVariationIndices[pick];
+                if (newSeq != instance.currentSequenceIndex && newSeq < static_cast<int>(model.sequences.size())) {
+                    instance.playingVariation = true;
+                    instance.currentSequenceIndex = newSeq;
+                    instance.animDuration = static_cast<float>(model.sequences[newSeq].duration);
+                    instance.animTime = 0.0f;
+                } else {
+                    instance.variationTimer = 2000.0f + static_cast<float>(rand() % 4000);
+                }
+            }
         }
 
         computeBoneMatrices(model, instance);
@@ -805,10 +882,10 @@ void M2Renderer::render(const Camera& camera, const glm::mat4& view, const glm::
 
     lastDrawCallCount = 0;
 
-    // Distance-based culling threshold for M2 models
-    const float maxRenderDistance = 180.0f;  // Aggressive culling for city performance
+    // Adaptive render distance: shorter in dense areas (cities), longer in open terrain
+    const float maxRenderDistance = (instances.size() > 600) ? 180.0f : 350.0f;
     const float maxRenderDistanceSq = maxRenderDistance * maxRenderDistance;
-    const float fadeStartFraction = 0.75f;   // Start fading at 75% of max distance
+    const float fadeStartFraction = 0.75f;
     const glm::vec3 camPos = camera.getPosition();
 
     for (const auto& instance : instances) {
