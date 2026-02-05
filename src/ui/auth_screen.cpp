@@ -1,6 +1,10 @@
 #include "ui/auth_screen.hpp"
+#include "core/logger.hpp"
 #include <imgui.h>
 #include <sstream>
+#include <fstream>
+#include <cstdlib>
+#include <filesystem>
 
 namespace wowee { namespace ui {
 
@@ -8,6 +12,12 @@ AuthScreen::AuthScreen() {
 }
 
 void AuthScreen::render(auth::AuthHandler& authHandler) {
+    // Load saved login info on first render
+    if (!loginInfoLoaded) {
+        loadLoginInfo();
+        loginInfoLoaded = true;
+    }
+
     ImGui::SetNextWindowSize(ImVec2(500, 400), ImGuiCond_FirstUseEver);
     ImGui::Begin("WoW 3.3.5a Authentication", nullptr, ImGuiWindowFlags_NoCollapse);
 
@@ -155,6 +165,9 @@ void AuthScreen::attemptAuth(auth::AuthHandler& authHandler) {
         authTimer = 0.0f;
         setStatus("Connected, authenticating...", false);
 
+        // Save login info for next session
+        saveLoginInfo();
+
         // Send authentication credentials
         authHandler.authenticate(username, password);
     } else {
@@ -168,6 +181,63 @@ void AuthScreen::attemptAuth(auth::AuthHandler& authHandler) {
 void AuthScreen::setStatus(const std::string& message, bool isError) {
     statusMessage = message;
     statusIsError = isError;
+}
+
+std::string AuthScreen::getConfigPath() {
+    std::string dir;
+#ifdef _WIN32
+    const char* appdata = std::getenv("APPDATA");
+    dir = appdata ? std::string(appdata) + "\\wowee" : ".";
+#else
+    const char* home = std::getenv("HOME");
+    dir = home ? std::string(home) + "/.wowee" : ".";
+#endif
+    return dir + "/login.cfg";
+}
+
+void AuthScreen::saveLoginInfo() {
+    std::string path = getConfigPath();
+    std::filesystem::path dir = std::filesystem::path(path).parent_path();
+    std::error_code ec;
+    std::filesystem::create_directories(dir, ec);
+
+    std::ofstream out(path);
+    if (!out.is_open()) {
+        LOG_WARNING("Could not save login info to ", path);
+        return;
+    }
+
+    out << "hostname=" << hostname << "\n";
+    out << "port=" << port << "\n";
+    out << "username=" << username << "\n";
+
+    LOG_INFO("Login info saved to ", path);
+}
+
+void AuthScreen::loadLoginInfo() {
+    std::string path = getConfigPath();
+    std::ifstream in(path);
+    if (!in.is_open()) return;
+
+    std::string line;
+    while (std::getline(in, line)) {
+        size_t eq = line.find('=');
+        if (eq == std::string::npos) continue;
+        std::string key = line.substr(0, eq);
+        std::string val = line.substr(eq + 1);
+
+        if (key == "hostname" && !val.empty()) {
+            strncpy(hostname, val.c_str(), sizeof(hostname) - 1);
+            hostname[sizeof(hostname) - 1] = '\0';
+        } else if (key == "port") {
+            try { port = std::stoi(val); } catch (...) {}
+        } else if (key == "username" && !val.empty()) {
+            strncpy(username, val.c_str(), sizeof(username) - 1);
+            username[sizeof(username) - 1] = '\0';
+        }
+    }
+
+    LOG_INFO("Login info loaded from ", path);
 }
 
 }} // namespace wowee::ui

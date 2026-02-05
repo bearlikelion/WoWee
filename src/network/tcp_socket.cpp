@@ -52,6 +52,34 @@ bool TCPSocket::connect(const std::string& host, uint16_t port) {
             sockfd = INVALID_SOCK;
             return false;
         }
+
+        // Non-blocking connect in progress — wait for it to complete
+        fd_set writefds;
+        FD_ZERO(&writefds);
+        FD_SET(sockfd, &writefds);
+
+        struct timeval tv;
+        tv.tv_sec = 5;
+        tv.tv_usec = 0;
+
+        int selectResult = ::select(static_cast<int>(sockfd) + 1, nullptr, &writefds, nullptr, &tv);
+        if (selectResult <= 0) {
+            LOG_ERROR("Connection timed out to ", host, ":", port);
+            net::closeSocket(sockfd);
+            sockfd = INVALID_SOCK;
+            return false;
+        }
+
+        // Check if the connection actually succeeded
+        int sockErr = 0;
+        socklen_t errLen = sizeof(sockErr);
+        getsockopt(sockfd, SOL_SOCKET, SO_ERROR, reinterpret_cast<char*>(&sockErr), &errLen);
+        if (sockErr != 0) {
+            LOG_ERROR("Connection failed: ", net::errorString(sockErr));
+            net::closeSocket(sockfd);
+            sockfd = INVALID_SOCK;
+            return false;
+        }
     }
 
     connected = true;

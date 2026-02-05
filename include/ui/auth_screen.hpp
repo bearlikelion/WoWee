@@ -70,6 +70,14 @@ private:
      * Update status message
      */
     void setStatus(const std::string& message, bool isError = false);
+
+    /**
+     * Persist/restore login fields
+     */
+    void saveLoginInfo();
+    void loadLoginInfo();
+    static std::string getConfigPath();
+    bool loginInfoLoaded = false;
 };
 
 }} // namespace wowee::ui
