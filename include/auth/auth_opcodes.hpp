@@ -35,6 +35,15 @@ enum class AuthResult : uint8_t {
     LOCK_ENFORCED = 0x10,
     TRIAL_EXPIRED = 0x11,
     BATTLE_NET = 0x12,
+    ANTI_INDULGENCE = 0x13,
+    EXPIRED = 0x14,
+    NO_GAME_ACCOUNT = 0x15,
+    CHARGEBACK = 0x16,
+    IGR_WITHOUT_BNET = 0x17,
+    GAME_ACCOUNT_LOCKED = 0x18,
+    UNLOCKABLE_LOCK = 0x19,
+    CONVERSION_REQUIRED = 0x20,
+    DISCONNECTED = 0xFF,
 };
 
 const char* getAuthResultString(AuthResult result);

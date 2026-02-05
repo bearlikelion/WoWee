@@ -12,25 +12,33 @@ network::Packet LogonChallengePacket::build(const std::string& account, const Cl
     std::string upperAccount = account;
     std::transform(upperAccount.begin(), upperAccount.end(), upperAccount.begin(), ::toupper);
 
-    // Calculate packet size
-    // Opcode(1) + unknown(1) + size(2) + game(4) + version(3) + build(2) +
-    // platform(4) + os(4) + locale(4) + timezone(4) + ip(4) + accountLen(1) + account(N)
+    // Calculate payload size (everything after cmd + error + size)
+    // game(4) + version(3) + build(2) + platform(4) + os(4) + locale(4) +
+    // timezone(4) + ip(4) + accountLen(1) + account(N)
     uint16_t payloadSize = 30 + upperAccount.length();
 
     network::Packet packet(static_cast<uint16_t>(AuthOpcode::LOGON_CHALLENGE));
 
-    // Unknown byte
-    packet.writeUInt8(0x00);
+    // Protocol version (real WoW 3.3.5a client sends 3)
+    packet.writeUInt8(0x03);
 
     // Payload size
     packet.writeUInt16(payloadSize);
 
-    // Game name (4 bytes, null-padded)
-    packet.writeBytes(reinterpret_cast<const uint8_t*>(info.game.c_str()),
-                      std::min<size_t>(4, info.game.length()));
-    for (size_t i = info.game.length(); i < 4; ++i) {
-        packet.writeUInt8(0);
-    }
+    // Helper: write a FourCC string as reversed bytes (little-endian FourCC)
+    // Real WoW client stores FourCC as big-endian uint32, written in LE byte order
+    auto writeFourCC = [&packet](const std::string& str) {
+        uint8_t buf[4] = {0, 0, 0, 0};
+        for (size_t i = 0; i < std::min<size_t>(4, str.length()); ++i) {
+            buf[i] = static_cast<uint8_t>(str[i]);
+        }
+        for (int i = 3; i >= 0; --i) {
+            packet.writeUInt8(buf[i]);
+        }
+    };
+
+    // Game name (4 bytes, reversed FourCC)
+    writeFourCC(info.game);
 
     // Version (3 bytes)
     packet.writeUInt8(info.majorVersion);
@@ -40,26 +48,14 @@ network::Packet LogonChallengePacket::build(const std::string& account, const Cl
     // Build (2 bytes)
     packet.writeUInt16(info.build);
 
-    // Platform (4 bytes, null-padded)
-    packet.writeBytes(reinterpret_cast<const uint8_t*>(info.platform.c_str()),
-                      std::min<size_t>(4, info.platform.length()));
-    for (size_t i = info.platform.length(); i < 4; ++i) {
-        packet.writeUInt8(0);
-    }
+    // Platform (4 bytes, reversed FourCC)
+    writeFourCC(info.platform);
 
-    // OS (4 bytes, null-padded)
-    packet.writeBytes(reinterpret_cast<const uint8_t*>(info.os.c_str()),
-                      std::min<size_t>(4, info.os.length()));
-    for (size_t i = info.os.length(); i < 4; ++i) {
-        packet.writeUInt8(0);
-    }
+    // OS (4 bytes, reversed FourCC)
+    writeFourCC(info.os);
 
-    // Locale (4 bytes, null-padded)
-    packet.writeBytes(reinterpret_cast<const uint8_t*>(info.locale.c_str()),
-                      std::min<size_t>(4, info.locale.length()));
-    for (size_t i = info.locale.length(); i < 4; ++i) {
-        packet.writeUInt8(0);
-    }
+    // Locale (4 bytes, reversed FourCC)
+    writeFourCC(info.locale);
 
     // Timezone
     packet.writeUInt32(info.timezone);
@@ -80,14 +76,9 @@ network::Packet LogonChallengePacket::build(const std::string& account, const Cl
 }
 
 bool LogonChallengeResponseParser::parse(network::Packet& packet, LogonChallengeResponse& response) {
-    // Read opcode (should be LOGON_CHALLENGE)
-    uint8_t opcode = packet.readUInt8();
-    if (opcode != static_cast<uint8_t>(AuthOpcode::LOGON_CHALLENGE)) {
-        LOG_ERROR("Invalid opcode in LOGON_CHALLENGE response: ", (int)opcode);
-        return false;
-    }
+    // Note: opcode byte already consumed by handlePacket()
 
-    // Unknown byte
+    // Unknown/protocol byte
     packet.readUInt8();
 
     // Status
@@ -180,12 +171,7 @@ network::Packet LogonProofPacket::build(const std::vector<uint8_t>& A,
 }
 
 bool LogonProofResponseParser::parse(network::Packet& packet, LogonProofResponse& response) {
-    // Read opcode (should be LOGON_PROOF)
-    uint8_t opcode = packet.readUInt8();
-    if (opcode != static_cast<uint8_t>(AuthOpcode::LOGON_PROOF)) {
-        LOG_ERROR("Invalid opcode in LOGON_PROOF response: ", (int)opcode);
-        return false;
-    }
+    // Note: opcode byte already consumed by handlePacket()
 
     // Status
     response.status = packet.readUInt8();
@@ -222,12 +208,7 @@ network::Packet RealmListPacket::build() {
 }
 
 bool RealmListResponseParser::parse(network::Packet& packet, RealmListResponse& response) {
-    // Read opcode (should be REALM_LIST)
-    uint8_t opcode = packet.readUInt8();
-    if (opcode != static_cast<uint8_t>(AuthOpcode::REALM_LIST)) {
-        LOG_ERROR("Invalid opcode in REALM_LIST response: ", (int)opcode);
-        return false;
-    }
+    // Note: opcode byte already consumed by handlePacket()
 
     // Packet size (2 bytes) - we already know the size, skip it
     uint16_t packetSize = packet.readUInt16();

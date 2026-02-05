@@ -224,14 +224,14 @@ size_t TCPSocket::getExpectedPacketSize(uint8_t opcode) {
             return 0;  // Need more data to determine
 
         case 0x01:  // LOGON_PROOF response
-            // opcode(1) + status(1) + M2(20) = 22 bytes on success
-            // opcode(1) + status(1) = 2 bytes on failure
+            // Success: opcode(1) + status(1) + M2(20) + accountFlags(4) + surveyId(4) + loginFlags(2) = 32
+            // Failure: opcode(1) + status(1) + padding(2) = 4
             if (receiveBuffer.size() >= 2) {
                 uint8_t status = receiveBuffer[1];
                 if (status == 0x00) {
-                    return 22;  // Success
+                    return 32;  // Success
                 } else {
-                    return 2;   // Failure
+                    return 4;   // Failure
                 }
             }
             return 0;  // Need more data

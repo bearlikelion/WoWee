@@ -31,6 +31,17 @@ const char* getAuthResultString(AuthResult result) {
         case AuthResult::LOCK_ENFORCED: return "Account locked - check your email";
         case AuthResult::TRIAL_EXPIRED: return "Trial period has expired";
         case AuthResult::BATTLE_NET: return "Battle.net error";
+        case AuthResult::ANTI_INDULGENCE: return "Anti-indulgence time limit reached";
+        case AuthResult::EXPIRED: return "Account subscription has expired";
+        case AuthResult::NO_GAME_ACCOUNT: return "No game account found - create one on the server website";
+        case AuthResult::CHARGEBACK: return "Account locked due to chargeback";
+        case AuthResult::IGR_WITHOUT_BNET:
+            return "Internet Game Room access denied - account may require "
+                   "registration on the server website";
+        case AuthResult::GAME_ACCOUNT_LOCKED: return "Game account is locked";
+        case AuthResult::UNLOCKABLE_LOCK: return "Account is locked and cannot be unlocked";
+        case AuthResult::CONVERSION_REQUIRED: return "Account conversion required";
+        case AuthResult::DISCONNECTED: return "Disconnected from server";
         default:
             snprintf(authResultBuf, sizeof(authResultBuf),
                      "Server rejected login (error code 0x%02X)",
