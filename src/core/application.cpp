@@ -59,7 +59,7 @@ const SpawnPreset* selectSpawnPreset(const char* envValue) {
     }
 
     LOG_WARNING("Unknown WOW_SPAWN='", key, "', falling back to goldshire");
-    LOG_INFO("Available WOW_SPAWN presets: goldshire, stormwind, ironforge, westfall");
+    LOG_INFO("Available WOW_SPAWN presets: goldshire, stormwind, sw_plaza, ironforge, westfall");
     return &SPAWN_PRESETS[0];
 }
 
@@ -676,12 +676,12 @@ void Application::spawnPlayerCharacter() {
         LOG_INFO("Loaded fallback cube model (no MPQ data)");
     }
 
-    // Spawn character at the camera controller's default position (matches hearthstone),
-    // but snap Z to actual terrain height so the character doesn't float.
+    // Spawn character at the camera controller's default position (matches hearthstone).
+    // Most presets snap to floor; explicit WMO-floor presets keep their authored Z.
     auto* camCtrl = renderer->getCameraController();
     glm::vec3 spawnPos = camCtrl ? camCtrl->getDefaultPosition()
                                  : (camera->getPosition() - glm::vec3(0.0f, 0.0f, 5.0f));
-    if (renderer->getTerrainManager()) {
+    if (spawnSnapToGround && renderer->getTerrainManager()) {
         auto terrainH = renderer->getTerrainManager()->getHeightAt(spawnPos.x, spawnPos.y);
         if (terrainH) {
             spawnPos.z = *terrainH + 0.1f;
@@ -913,6 +913,7 @@ void Application::startSinglePlayer() {
     std::string mapName = spawnPreset ? spawnPreset->mapName : "Azeroth";
     float spawnYaw = spawnPreset ? spawnPreset->yawDeg : 0.0f;
     float spawnPitch = spawnPreset ? spawnPreset->pitchDeg : -5.0f;
+    spawnSnapToGround = spawnPreset ? spawnPreset->snapToGround : true;
 
     if (auto envSpawnPos = parseVec3Csv(std::getenv("WOW_SPAWN_POS"))) {
         spawnCanonical = *envSpawnPos;
@@ -1014,8 +1015,8 @@ void Application::startSinglePlayer() {
         LOG_INFO("Terrain streaming complete: ", terrainMgr->getLoadedTileCount(), " tiles loaded");
 
         // Re-snap camera to ground now that all surrounding tiles are loaded
-        // (the initial reset inside loadTestTerrain only had 1 tile)
-        if (renderer->getCameraController()) {
+        // (the initial reset inside loadTestTerrain only had 1 tile).
+        if (spawnSnapToGround && renderer->getCameraController()) {
             renderer->getCameraController()->reset();
         }
     }
@@ -1027,7 +1028,7 @@ void Application::startSinglePlayer() {
 
     // Final camera reset: now that follow target exists and terrain is loaded,
     // snap the third-person camera into the correct orbit position.
-    if (renderer && renderer->getCameraController()) {
+    if (spawnSnapToGround && renderer && renderer->getCameraController()) {
         renderer->getCameraController()->reset();
     }
 
@@ -1055,6 +1056,7 @@ void Application::teleportTo(int presetIndex) {
 
     const auto& preset = SPAWN_PRESETS[presetIndex];
     LOG_INFO("Teleporting to: ", preset.label);
+    spawnSnapToGround = preset.snapToGround;
 
     // Convert canonical WoW → engine rendering coordinates (swap X/Y)
     glm::vec3 spawnRender = core::coords::canonicalToRender(preset.spawnCanonical);
@@ -1120,16 +1122,20 @@ void Application::teleportTo(int presetIndex) {
         LOG_INFO("Teleport terrain streaming complete: ", terrainMgr->getLoadedTileCount(), " tiles loaded");
     }
 
-    // Reset camera — this snaps character position to terrain via followTarget
-    if (renderer && renderer->getCameraController()) {
+    // Floor-snapping presets use camera reset. WMO-floor presets keep explicit Z.
+    if (spawnSnapToGround && renderer && renderer->getCameraController()) {
         renderer->getCameraController()->reset();
     }
 
-    // Sync the terrain-snapped character position to game handler
+    if (!spawnSnapToGround && renderer) {
+        renderer->getCharacterPosition() = spawnRender;
+    }
+
+    // Sync final character position to game handler
     if (renderer && gameHandler) {
-        glm::vec3 snappedRender = renderer->getCharacterPosition();
-        glm::vec3 snappedCanonical = core::coords::renderToCanonical(snappedRender);
-        gameHandler->setPosition(snappedCanonical.x, snappedCanonical.y, snappedCanonical.z);
+        glm::vec3 finalRender = renderer->getCharacterPosition();
+        glm::vec3 finalCanonical = core::coords::renderToCanonical(finalRender);
+        gameHandler->setPosition(finalCanonical.x, finalCanonical.y, finalCanonical.z);
     }
 
     LOG_INFO("Teleport to ", preset.label, " complete");

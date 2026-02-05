@@ -92,6 +92,7 @@ private:
     bool singlePlayerMode = false;
     bool playerCharacterSpawned = false;
     bool npcsSpawned = false;
+    bool spawnSnapToGround = true;
     float lastFrameTime = 0.0f;
     float movementHeartbeatTimer = 0.0f;
 
