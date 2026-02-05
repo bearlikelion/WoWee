@@ -60,6 +60,9 @@ enum class Opcode : uint16_t {
     SMSG_GAMEOBJECT_QUERY_RESPONSE   = 0x05F,
     CMSG_SET_ACTIVE_MOVER            = 0x26A,
 
+    // ---- XP ----
+    SMSG_LOG_XPGAIN                  = 0x1D0,
+
     // ---- Phase 2: Combat Core ----
     CMSG_ATTACKSWING                 = 0x141,
     CMSG_ATTACKSTOP                  = 0x142,

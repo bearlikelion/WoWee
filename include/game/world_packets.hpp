@@ -743,6 +743,25 @@ public:
 };
 
 // ============================================================
+// XP Gain
+// ============================================================
+
+/** SMSG_LOG_XPGAIN data */
+struct XpGainData {
+    uint64_t victimGuid = 0;    // 0 for non-kill XP (quest, exploration)
+    uint32_t totalXp = 0;
+    uint8_t type = 0;           // 0 = kill, 1 = non-kill
+    uint32_t groupBonus = 0;
+
+    bool isValid() const { return totalXp > 0; }
+};
+
+class XpGainParser {
+public:
+    static bool parse(network::Packet& packet, XpGainData& data);
+};
+
+// ============================================================
 // Phase 3: Spells, Action Bar, Auras
 // ============================================================
 

@@ -110,6 +110,7 @@ private:
 
     // ---- New UI renders ----
     void renderActionBar(game::GameHandler& gameHandler);
+    void renderXpBar(game::GameHandler& gameHandler);
     void renderCastBar(game::GameHandler& gameHandler);
     void renderCombatText(game::GameHandler& gameHandler);
     void renderPartyFrames(game::GameHandler& gameHandler);

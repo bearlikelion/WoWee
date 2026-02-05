@@ -253,6 +253,11 @@ void GameHandler::handlePacket(network::Packet& packet) {
             handleCreatureQueryResponse(packet);
             break;
 
+        // ---- XP ----
+        case Opcode::SMSG_LOG_XPGAIN:
+            handleXpGain(packet);
+            break;
+
         // ---- Phase 2: Combat ----
         case Opcode::SMSG_ATTACKSTART:
             handleAttackStart(packet);
@@ -824,6 +829,17 @@ void GameHandler::handleUpdateObject(network::Packet& packet) {
                         }
                     }
                 }
+                // Extract XP fields for player entity
+                if (block.guid == playerGuid && block.objectType == ObjectType::PLAYER) {
+                    for (const auto& [key, val] : block.fields) {
+                        switch (key) {
+                            case 634: playerXp_ = val; break;           // PLAYER_XP
+                            case 635: playerNextLevelXp_ = val; break;  // PLAYER_NEXT_LEVEL_XP
+                            case 54:  serverPlayerLevel_ = val; break;  // UNIT_FIELD_LEVEL
+                            default: break;
+                        }
+                    }
+                }
                 break;
             }
 
@@ -845,6 +861,17 @@ void GameHandler::handleUpdateObject(network::Packet& packet) {
                                 case 32: unit->setMaxHealth(val); break;
                                 case 33: unit->setMaxPower(val); break;
                                 case 54: unit->setLevel(val); break;
+                                default: break;
+                            }
+                        }
+                    }
+                    // Update XP fields for player entity
+                    if (block.guid == playerGuid) {
+                        for (const auto& [key, val] : block.fields) {
+                            switch (key) {
+                                case 634: playerXp_ = val; break;           // PLAYER_XP
+                                case 635: playerNextLevelXp_ = val; break;  // PLAYER_NEXT_LEVEL_XP
+                                case 54:  serverPlayerLevel_ = val; break;  // UNIT_FIELD_LEVEL
                                 default: break;
                             }
                         }
@@ -1692,6 +1719,13 @@ void GameHandler::performPlayerSwing() {
 }
 
 void GameHandler::handleNpcDeath(uint64_t guid) {
+    // Award XP from kill
+    auto entity = entityManager.getEntity(guid);
+    if (entity && entity->getType() == ObjectType::UNIT) {
+        auto unit = std::static_pointer_cast<Unit>(entity);
+        awardLocalXp(unit->getLevel());
+    }
+
     // Remove from aggro list
     aggroList_.erase(
         std::remove_if(aggroList_.begin(), aggroList_.end(),
@@ -1793,6 +1827,102 @@ void GameHandler::performNpcSwing(uint64_t guid) {
 
     addCombatText(crit ? CombatTextEntry::CRIT_DAMAGE : CombatTextEntry::MELEE_DAMAGE,
                   damage, 0, false);
+}
+
+// ============================================================
+// XP tracking
+// ============================================================
+
+// WotLK 3.3.5a XP-to-next-level table (from player_xp_for_level)
+static const uint32_t XP_TABLE[] = {
+    0,       // level 0 (unused)
+    400,     900,     1400,    2100,    2800,    3600,    4500,    5400,    6500,    7600,     // 1-10
+    8700,    9800,    11000,   12300,   13600,   15000,   16400,   17800,   19300,   20800,    // 11-20
+    22400,   24000,   25500,   27200,   28900,   30500,   32200,   33900,   36300,   38800,    // 21-30
+    41600,   44600,   48000,   51400,   55000,   58700,   62400,   66200,   70200,   74300,    // 31-40
+    78500,   82800,   87100,   91600,   96300,   101000,  105800,  110700,  115700,  120900,   // 41-50
+    126100,  131500,  137000,  142500,  148200,  154000,  159900,  165800,  172000,  290000,   // 51-60
+    317000,  349000,  386000,  428000,  475000,  527000,  585000,  648000,  717000,  1523800,  // 61-70
+    1539600, 1555700, 1571800, 1587900, 1604200, 1620700, 1637400, 1653900, 1670800           // 71-79
+};
+static constexpr uint32_t XP_TABLE_SIZE = sizeof(XP_TABLE) / sizeof(XP_TABLE[0]);
+
+uint32_t GameHandler::xpForLevel(uint32_t level) {
+    if (level == 0 || level >= XP_TABLE_SIZE) return 0;
+    return XP_TABLE[level];
+}
+
+uint32_t GameHandler::killXp(uint32_t playerLevel, uint32_t victimLevel) {
+    if (playerLevel == 0 || victimLevel == 0) return 0;
+
+    // Gray level check (too low = 0 XP)
+    int32_t grayLevel;
+    if (playerLevel <= 5)        grayLevel = 0;
+    else if (playerLevel <= 39)  grayLevel = static_cast<int32_t>(playerLevel) - 5 - static_cast<int32_t>(playerLevel) / 10;
+    else if (playerLevel <= 59)  grayLevel = static_cast<int32_t>(playerLevel) - 1 - static_cast<int32_t>(playerLevel) / 5;
+    else                         grayLevel = static_cast<int32_t>(playerLevel) - 9;
+
+    if (static_cast<int32_t>(victimLevel) <= grayLevel) return 0;
+
+    // Base XP = 45 + 5 * victimLevel (WoW-like ZeroDifference formula)
+    uint32_t baseXp = 45 + 5 * victimLevel;
+
+    // Level difference multiplier
+    int32_t diff = static_cast<int32_t>(victimLevel) - static_cast<int32_t>(playerLevel);
+    float multiplier = 1.0f + diff * 0.05f;
+    if (multiplier < 0.1f) multiplier = 0.1f;
+    if (multiplier > 2.0f) multiplier = 2.0f;
+
+    return static_cast<uint32_t>(baseXp * multiplier);
+}
+
+void GameHandler::awardLocalXp(uint32_t victimLevel) {
+    if (localPlayerLevel_ >= 80) return; // Level cap
+
+    uint32_t xp = killXp(localPlayerLevel_, victimLevel);
+    if (xp == 0) return;
+
+    playerXp_ += xp;
+
+    // Show XP gain in combat text as a heal-type (gold text)
+    addCombatText(CombatTextEntry::HEAL, static_cast<int32_t>(xp), 0, true);
+
+    LOG_INFO("XP gained: +", xp, " (total: ", playerXp_, "/", playerNextLevelXp_, ")");
+
+    // Check for level-up
+    while (playerXp_ >= playerNextLevelXp_ && localPlayerLevel_ < 80) {
+        playerXp_ -= playerNextLevelXp_;
+        levelUp();
+    }
+}
+
+void GameHandler::levelUp() {
+    localPlayerLevel_++;
+    playerNextLevelXp_ = xpForLevel(localPlayerLevel_);
+
+    // Scale HP with level
+    uint32_t newMaxHp = 20 + localPlayerLevel_ * 10;
+    localPlayerMaxHealth_ = newMaxHp;
+    localPlayerHealth_ = newMaxHp; // Full heal on level-up
+
+    LOG_INFO("LEVEL UP! Now level ", localPlayerLevel_,
+             " (HP: ", newMaxHp, ", next level: ", playerNextLevelXp_, " XP)");
+
+    // Announce in chat
+    MessageChatData msg;
+    msg.type = ChatType::SYSTEM;
+    msg.language = ChatLanguage::UNIVERSAL;
+    msg.message = "You have reached level " + std::to_string(localPlayerLevel_) + "!";
+    addLocalChatMessage(msg);
+}
+
+void GameHandler::handleXpGain(network::Packet& packet) {
+    XpGainData data;
+    if (!XpGainParser::parse(packet, data)) return;
+
+    // Server already updates PLAYER_XP via update fields,
+    // but we can show combat text for XP gains
+    addCombatText(CombatTextEntry::HEAL, static_cast<int32_t>(data.totalXp), 0, true);
 }
 
 uint32_t GameHandler::generateClientSeed() {

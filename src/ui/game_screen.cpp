@@ -72,6 +72,7 @@ void GameScreen::render(game::GameHandler& gameHandler) {
 
     // ---- New UI elements ----
     renderActionBar(gameHandler);
+    renderXpBar(gameHandler);
     renderCastBar(gameHandler);
     renderCombatText(gameHandler);
     renderPartyFrames(gameHandler);
@@ -1088,6 +1089,65 @@ void GameScreen::renderActionBar(game::GameHandler& gameHandler) {
 
     ImGui::PopStyleColor();
     ImGui::PopStyleVar();
+}
+
+// ============================================================
+// XP Bar
+// ============================================================
+
+void GameScreen::renderXpBar(game::GameHandler& gameHandler) {
+    uint32_t nextLevelXp = gameHandler.getPlayerNextLevelXp();
+    if (nextLevelXp == 0) return; // No XP data yet (level 80 or not initialized)
+
+    uint32_t currentXp = gameHandler.getPlayerXp();
+    uint32_t level = gameHandler.getPlayerLevel();
+
+    auto* window = core::Application::getInstance().getWindow();
+    float screenW = window ? static_cast<float>(window->getWidth()) : 1280.0f;
+    float screenH = window ? static_cast<float>(window->getHeight()) : 720.0f;
+
+    // Position just above the action bar
+    float slotSize = 48.0f;
+    float spacing = 4.0f;
+    float padding = 8.0f;
+    float barW = 12 * slotSize + 11 * spacing + padding * 2;
+    float barH = slotSize + 24.0f;
+    float actionBarY = screenH - barH;
+
+    float xpBarH = 14.0f;
+    float xpBarW = barW;
+    float xpBarX = (screenW - xpBarW) / 2.0f;
+    float xpBarY = actionBarY - xpBarH - 2.0f;
+
+    ImGui::SetNextWindowPos(ImVec2(xpBarX, xpBarY), ImGuiCond_Always);
+    ImGui::SetNextWindowSize(ImVec2(xpBarW, xpBarH + 4.0f), ImGuiCond_Always);
+
+    ImGuiWindowFlags flags = ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove |
+                             ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoTitleBar |
+                             ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_AlwaysAutoResize;
+
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 2.0f);
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(2.0f, 2.0f));
+    ImGui::PushStyleColor(ImGuiCol_WindowBg, ImVec4(0.05f, 0.05f, 0.05f, 0.9f));
+    ImGui::PushStyleColor(ImGuiCol_Border, ImVec4(0.3f, 0.3f, 0.3f, 0.8f));
+
+    if (ImGui::Begin("##XpBar", nullptr, flags)) {
+        float pct = static_cast<float>(currentXp) / static_cast<float>(nextLevelXp);
+        if (pct > 1.0f) pct = 1.0f;
+
+        // Purple XP bar (WoW-style)
+        ImGui::PushStyleColor(ImGuiCol_PlotHistogram, ImVec4(0.58f, 0.2f, 0.93f, 1.0f));
+
+        char overlay[96];
+        snprintf(overlay, sizeof(overlay), "Lv %u  -  %u / %u XP", level, currentXp, nextLevelXp);
+        ImGui::ProgressBar(pct, ImVec2(-1, xpBarH - 4.0f), overlay);
+
+        ImGui::PopStyleColor();
+    }
+    ImGui::End();
+
+    ImGui::PopStyleColor(2);
+    ImGui::PopStyleVar(2);
 }
 
 // ============================================================

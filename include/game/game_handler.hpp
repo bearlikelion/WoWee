@@ -219,7 +219,14 @@ public:
         localPlayerLevel_ = level;
         localPlayerHealth_ = hp;
         localPlayerMaxHealth_ = maxHp;
+        playerNextLevelXp_ = xpForLevel(level);
+        playerXp_ = 0;
     }
+
+    // XP tracking (works in both single-player and server modes)
+    uint32_t getPlayerXp() const { return playerXp_; }
+    uint32_t getPlayerNextLevelXp() const { return playerNextLevelXp_; }
+    uint32_t getPlayerLevel() const { return singlePlayerMode_ ? localPlayerLevel_ : serverPlayerLevel_; }
 
     // Hearthstone callback (single-player teleport)
     using HearthstoneCallback = std::function<void()>;
@@ -361,6 +368,9 @@ private:
     void handleGroupUninvite(network::Packet& packet);
     void handlePartyCommandResult(network::Packet& packet);
 
+    // ---- XP handler ----
+    void handleXpGain(network::Packet& packet);
+
     // ---- Phase 5 handlers ----
     void handleLootResponse(network::Packet& packet);
     void handleLootReleaseResponse(network::Packet& packet);
@@ -485,6 +495,15 @@ private:
     // Callbacks
     WorldConnectSuccessCallback onSuccess;
     WorldConnectFailureCallback onFailure;
+
+    // ---- XP tracking ----
+    uint32_t playerXp_ = 0;
+    uint32_t playerNextLevelXp_ = 0;
+    uint32_t serverPlayerLevel_ = 1;
+    void awardLocalXp(uint32_t victimLevel);
+    void levelUp();
+    static uint32_t xpForLevel(uint32_t level);
+    static uint32_t killXp(uint32_t playerLevel, uint32_t victimLevel);
 
     // ---- Single-player combat ----
     bool singlePlayerMode_ = false;

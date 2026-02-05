@@ -1053,6 +1053,23 @@ bool SpellHealLogParser::parse(network::Packet& packet, SpellHealLogData& data) 
 }
 
 // ============================================================
+// XP Gain
+// ============================================================
+
+bool XpGainParser::parse(network::Packet& packet, XpGainData& data) {
+    data.victimGuid = packet.readUInt64();
+    data.totalXp = packet.readUInt32();
+    data.type = packet.readUInt8();
+    if (data.type == 0) {
+        // Kill XP: has group bonus float (unused) + group bonus uint32
+        packet.readFloat();
+        data.groupBonus = packet.readUInt32();
+    }
+    LOG_INFO("XP gain: ", data.totalXp, " xp (type=", static_cast<int>(data.type), ")");
+    return data.totalXp > 0;
+}
+
+// ============================================================
 // Phase 3: Spells, Action Bar, Auras
 // ============================================================
 
