@@ -9,16 +9,19 @@
 namespace wowee {
 namespace pipeline { class AssetManager; }
 namespace rendering { class CharacterRenderer; }
+namespace rendering { class TerrainManager; }
 namespace game {
 
 class EntityManager;
 
 struct NpcSpawnDef {
+    std::string mapName;
     std::string name;
     std::string m2Path;
     uint32_t level;
     uint32_t health;
-    glm::vec3 glPosition;   // GL world coords (pre-converted)
+    glm::vec3 canonicalPosition; // WoW canonical coords (+X north, +Y west, +Z up)
+    bool inputIsServerCoords = false; // if true, input XYZ are server/wire order
     float rotation;          // radians around Z
     float scale;
     bool isCritter;          // critters don't do humanoid emotes
@@ -38,10 +41,19 @@ public:
     void initialize(pipeline::AssetManager* am,
                     rendering::CharacterRenderer* cr,
                     EntityManager& em,
-                    const glm::vec3& playerSpawnGL);
+                    const std::string& mapName,
+                    const glm::vec3& playerCanonical,
+                    const rendering::TerrainManager* terrainManager);
     void update(float deltaTime, rendering::CharacterRenderer* cr);
 
 private:
+    std::vector<NpcSpawnDef> loadSpawnDefsFromFile(const std::string& path) const;
+    std::vector<NpcSpawnDef> loadSpawnDefsFromAzerothCoreDb(
+        const std::string& basePath,
+        const std::string& mapName,
+        const glm::vec3& playerCanonical,
+        pipeline::AssetManager* am) const;
+
     void loadCreatureModel(pipeline::AssetManager* am,
                            rendering::CharacterRenderer* cr,
                            const std::string& m2Path,

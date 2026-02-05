@@ -5,11 +5,16 @@
 #include "pipeline/m2_loader.hpp"
 #include "pipeline/dbc_loader.hpp"
 #include "rendering/character_renderer.hpp"
+#include "rendering/terrain_manager.hpp"
 #include "core/logger.hpp"
 #include <random>
 #include <cmath>
 #include <algorithm>
 #include <cctype>
+#include <cstdlib>
+#include <fstream>
+#include <sstream>
+#include <filesystem>
 
 namespace wowee {
 namespace game {
@@ -28,6 +33,145 @@ static std::string toLowerStr(const std::string& s) {
     std::string out = s;
     for (char& c : out) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
     return out;
+}
+
+static std::string trim(const std::string& s) {
+    size_t b = 0;
+    while (b < s.size() && std::isspace(static_cast<unsigned char>(s[b]))) b++;
+    size_t e = s.size();
+    while (e > b && std::isspace(static_cast<unsigned char>(s[e - 1]))) e--;
+    return s.substr(b, e - b);
+}
+
+static std::string normalizeMapName(const std::string& raw) {
+    std::string n = toLowerStr(trim(raw));
+    n.erase(std::remove_if(n.begin(), n.end(), [](char c) { return c == ' ' || c == '_'; }), n.end());
+    return n;
+}
+
+static bool mapNamesEquivalent(const std::string& a, const std::string& b) {
+    std::string na = normalizeMapName(a);
+    std::string nb = normalizeMapName(b);
+    if (na == nb) return true;
+    // Azeroth world aliases seen across systems/UI.
+    auto isAzerothAlias = [](const std::string& n) {
+        return n == "azeroth" || n == "easternkingdoms" || n == "easternkingdom";
+    };
+    return isAzerothAlias(na) && isAzerothAlias(nb);
+}
+
+static bool parseVec2Csv(const char* raw, float& x, float& y) {
+    if (!raw || !*raw) return false;
+    std::string s(raw);
+    std::replace(s.begin(), s.end(), ';', ',');
+    std::stringstream ss(s);
+    std::string a, b;
+    if (!std::getline(ss, a, ',')) return false;
+    if (!std::getline(ss, b, ',')) return false;
+    try {
+        x = std::stof(trim(a));
+        y = std::stof(trim(b));
+        return true;
+    } catch (const std::exception&) {
+        return false;
+    }
+}
+
+static bool parseFloatEnv(const char* raw, float& out) {
+    if (!raw || !*raw) return false;
+    try {
+        out = std::stof(trim(raw));
+        return true;
+    } catch (const std::exception&) {
+        return false;
+    }
+}
+
+static int mapNameToId(const std::string& mapName) {
+    std::string n = normalizeMapName(mapName);
+    if (n == "azeroth" || n == "easternkingdoms" || n == "easternkingdom") return 0;
+    if (n == "kalimdor") return 1;
+    if (n == "outland" || n == "expansion01") return 530;
+    if (n == "northrend") return 571;
+    return 0;
+}
+
+static bool parseInsertTuples(const std::string& line, std::vector<std::string>& outTuples) {
+    outTuples.clear();
+    size_t valuesPos = line.find("VALUES");
+    if (valuesPos == std::string::npos) valuesPos = line.find("values");
+    if (valuesPos == std::string::npos) return false;
+
+    bool inQuote = false;
+    int depth = 0;
+    size_t tupleStart = std::string::npos;
+    for (size_t i = valuesPos; i < line.size(); i++) {
+        char c = line[i];
+        if (c == '\'' && (i == 0 || line[i - 1] != '\\')) inQuote = !inQuote;
+        if (inQuote) continue;
+        if (c == '(') {
+            if (depth == 0) tupleStart = i + 1;
+            depth++;
+        } else if (c == ')') {
+            depth--;
+            if (depth == 0 && tupleStart != std::string::npos && i > tupleStart) {
+                outTuples.push_back(line.substr(tupleStart, i - tupleStart));
+                tupleStart = std::string::npos;
+            }
+        }
+    }
+    return !outTuples.empty();
+}
+
+static std::vector<std::string> splitCsvTuple(const std::string& tuple) {
+    std::vector<std::string> cols;
+    std::string cur;
+    bool inQuote = false;
+    for (size_t i = 0; i < tuple.size(); i++) {
+        char c = tuple[i];
+        if (c == '\'' && (i == 0 || tuple[i - 1] != '\\')) {
+            inQuote = !inQuote;
+            cur.push_back(c);
+            continue;
+        }
+        if (c == ',' && !inQuote) {
+            cols.push_back(trim(cur));
+            cur.clear();
+            continue;
+        }
+        cur.push_back(c);
+    }
+    if (!cur.empty()) cols.push_back(trim(cur));
+    return cols;
+}
+
+static std::string unquoteSqlString(const std::string& s) {
+    if (s.size() >= 2 && s.front() == '\'' && s.back() == '\'') {
+        return s.substr(1, s.size() - 2);
+    }
+    return s;
+}
+
+static glm::vec3 toCanonicalSpawn(const NpcSpawnDef& s, bool swapXY, float rotDeg,
+                                  float pivotX, float pivotY, float dx, float dy) {
+    glm::vec3 canonical = s.inputIsServerCoords
+        ? core::coords::serverToCanonical(s.canonicalPosition)
+        : s.canonicalPosition;
+    if (swapXY) std::swap(canonical.x, canonical.y);
+
+    if (std::abs(rotDeg) > 0.001f) {
+        float rad = rotDeg * (3.1415926535f / 180.0f);
+        float c = std::cos(rad);
+        float s = std::sin(rad);
+        float x = canonical.x - pivotX;
+        float y = canonical.y - pivotY;
+        canonical.x = pivotX + x * c - y * s;
+        canonical.y = pivotY + x * s + y * c;
+    }
+
+    canonical.x += dx;
+    canonical.y += dy;
+    return canonical;
 }
 
 // Look up texture variants for a creature M2 using CreatureDisplayInfo.dbc
@@ -212,67 +356,336 @@ void NpcManager::loadCreatureModel(pipeline::AssetManager* am,
              " anims=", model.sequences.size(), " textures=", model.textures.size());
 }
 
+std::vector<NpcSpawnDef> NpcManager::loadSpawnDefsFromFile(const std::string& path) const {
+    std::vector<NpcSpawnDef> out;
+    std::string resolvedPath;
+    const std::string candidates[] = {
+        path,
+        "./" + path,
+        "../" + path,
+        "../../" + path,
+        "../../../" + path
+    };
+    for (const auto& c : candidates) {
+        if (std::filesystem::exists(c)) {
+            resolvedPath = c;
+            break;
+        }
+    }
+    if (resolvedPath.empty()) {
+        // Try relative to executable location.
+        std::error_code ec;
+        std::filesystem::path exe = std::filesystem::read_symlink("/proc/self/exe", ec);
+        if (!ec) {
+            std::filesystem::path dir = exe.parent_path();
+            for (int i = 0; i < 5 && !dir.empty(); i++) {
+                std::filesystem::path candidate = dir / path;
+                if (std::filesystem::exists(candidate)) {
+                    resolvedPath = candidate.string();
+                    break;
+                }
+                dir = dir.parent_path();
+            }
+        }
+    }
+
+    if (resolvedPath.empty()) {
+        LOG_WARNING("NpcManager: spawn CSV not found at ", path, " (or nearby relative paths)");
+        return out;
+    }
+
+    std::ifstream in(resolvedPath);
+    if (!in.is_open()) return out;
+
+    std::string line;
+    int lineNo = 0;
+    while (std::getline(in, line)) {
+        lineNo++;
+        line = trim(line);
+        if (line.empty() || line[0] == '#') continue;
+
+        std::vector<std::string> cols;
+        std::stringstream ss(line);
+        std::string tok;
+        while (std::getline(ss, tok, ',')) {
+            cols.push_back(trim(tok));
+        }
+
+        if (cols.size() != 11 && cols.size() != 12) {
+            LOG_WARNING("NpcManager: bad NPC CSV row at ", resolvedPath, ":", lineNo,
+                        " (expected 11 or 12 columns)");
+            continue;
+        }
+
+        try {
+            NpcSpawnDef def;
+            def.mapName = cols[0];
+            def.name = cols[1];
+            def.m2Path = cols[2];
+            def.level = static_cast<uint32_t>(std::stoul(cols[3]));
+            def.health = static_cast<uint32_t>(std::stoul(cols[4]));
+            def.canonicalPosition.x = std::stof(cols[5]);
+            def.canonicalPosition.y = std::stof(cols[6]);
+            def.canonicalPosition.z = std::stof(cols[7]);
+            def.rotation = std::stof(cols[8]);
+            def.scale = std::stof(cols[9]);
+            def.isCritter = (cols[10] == "1" || toLowerStr(cols[10]) == "true");
+            if (cols.size() == 12) {
+                std::string space = toLowerStr(cols[11]);
+                def.inputIsServerCoords = (space == "server" || space == "wire");
+            }
+
+            if (def.mapName.empty() || def.name.empty() || def.m2Path.empty()) continue;
+            out.push_back(std::move(def));
+        } catch (const std::exception&) {
+                LOG_WARNING("NpcManager: failed parsing NPC CSV row at ", resolvedPath, ":", lineNo);
+        }
+    }
+
+    LOG_INFO("NpcManager: loaded ", out.size(), " spawn defs from ", resolvedPath);
+
+    return out;
+}
+
+std::vector<NpcSpawnDef> NpcManager::loadSpawnDefsFromAzerothCoreDb(
+    const std::string& basePath,
+    const std::string& mapName,
+    const glm::vec3& playerCanonical,
+    pipeline::AssetManager* am) const {
+    std::vector<NpcSpawnDef> out;
+    if (!am) return out;
+
+    std::filesystem::path base(basePath);
+    std::filesystem::path creaturePath = base / "creature.sql";
+    std::filesystem::path tmplPath = base / "creature_template.sql";
+    if (!std::filesystem::exists(creaturePath) || !std::filesystem::exists(tmplPath)) {
+        // Allow passing .../sql or repo root as WOW_DB_BASE_PATH.
+        std::filesystem::path alt = base / "base";
+        if (std::filesystem::exists(alt / "creature.sql") && std::filesystem::exists(alt / "creature_template.sql")) {
+            base = alt;
+            creaturePath = base / "creature.sql";
+            tmplPath = base / "creature_template.sql";
+        } else {
+            alt = base / "sql" / "base";
+            if (std::filesystem::exists(alt / "creature.sql") && std::filesystem::exists(alt / "creature_template.sql")) {
+                base = alt;
+                creaturePath = base / "creature.sql";
+                tmplPath = base / "creature_template.sql";
+            }
+        }
+    }
+    if (!std::filesystem::exists(creaturePath) || !std::filesystem::exists(tmplPath)) {
+        return out;
+    }
+
+    struct TemplateRow {
+        std::string name;
+        uint32_t level = 1;
+        uint32_t health = 100;
+        std::string m2Path;
+    };
+    std::unordered_map<uint32_t, TemplateRow> templates;
+
+    // Build displayId -> modelId lookup.
+    std::unordered_map<uint32_t, uint32_t> displayToModel;
+    if (auto cdi = am->loadDBC("CreatureDisplayInfo.dbc"); cdi && cdi->isLoaded()) {
+        for (uint32_t i = 0; i < cdi->getRecordCount(); i++) {
+            displayToModel[cdi->getUInt32(i, 0)] = cdi->getUInt32(i, 1);
+        }
+    }
+    std::unordered_map<uint32_t, std::string> modelToPath;
+    if (auto cmd = am->loadDBC("CreatureModelData.dbc"); cmd && cmd->isLoaded()) {
+        for (uint32_t i = 0; i < cmd->getRecordCount(); i++) {
+            std::string mdx = cmd->getString(i, 2);
+            if (mdx.empty()) continue;
+            std::string p = mdx;
+            if (p.size() >= 4) p = p.substr(0, p.size() - 4) + ".m2";
+            modelToPath[cmd->getUInt32(i, 0)] = p;
+        }
+    }
+
+    // Parse creature_template.sql: entry, modelid1(displayId), name, minlevel.
+    {
+        std::ifstream in(tmplPath);
+        std::string line;
+        std::vector<std::string> tuples;
+        while (std::getline(in, line)) {
+            if (!parseInsertTuples(line, tuples)) continue;
+            for (const auto& t : tuples) {
+                auto cols = splitCsvTuple(t);
+                if (cols.size() < 16) continue;
+                try {
+                    uint32_t entry = static_cast<uint32_t>(std::stoul(cols[0]));
+                    uint32_t displayId = static_cast<uint32_t>(std::stoul(cols[6]));
+                    std::string name = unquoteSqlString(cols[10]);
+                    uint32_t minLevel = static_cast<uint32_t>(std::stoul(cols[14]));
+                    TemplateRow tr;
+                    tr.name = name.empty() ? ("Creature " + std::to_string(entry)) : name;
+                    tr.level = std::max(1u, minLevel);
+                    tr.health = 150 + tr.level * 35;
+                    auto itModel = displayToModel.find(displayId);
+                    if (itModel != displayToModel.end()) {
+                        auto itPath = modelToPath.find(itModel->second);
+                        if (itPath != modelToPath.end()) tr.m2Path = itPath->second;
+                    }
+                    templates[entry] = std::move(tr);
+                } catch (const std::exception&) {
+                }
+            }
+        }
+    }
+
+    int targetMap = mapNameToId(mapName);
+    constexpr float kRadius = 2200.0f;
+    constexpr size_t kMaxSpawns = 220;
+    std::ifstream in(creaturePath);
+    std::string line;
+    std::vector<std::string> tuples;
+    while (std::getline(in, line)) {
+        if (!parseInsertTuples(line, tuples)) continue;
+        for (const auto& t : tuples) {
+            auto cols = splitCsvTuple(t);
+            if (cols.size() < 16) continue;
+            try {
+                uint32_t entry = static_cast<uint32_t>(std::stoul(cols[1]));
+                int mapId = static_cast<int>(std::stol(cols[2]));
+                if (mapId != targetMap) continue;
+
+                float sx = std::stof(cols[7]);
+                float sy = std::stof(cols[8]);
+                float sz = std::stof(cols[9]);
+                float o = std::stof(cols[10]);
+                uint32_t curhealth = static_cast<uint32_t>(std::stoul(cols[14]));
+
+                glm::vec3 canonical = core::coords::serverToCanonical(glm::vec3(sx, sy, sz));
+                float dx = canonical.x - playerCanonical.x;
+                float dy = canonical.y - playerCanonical.y;
+                if (dx * dx + dy * dy > kRadius * kRadius) continue;
+
+                NpcSpawnDef def;
+                def.mapName = mapName;
+                auto it = templates.find(entry);
+                if (it != templates.end()) {
+                    def.name = it->second.name;
+                    def.level = it->second.level;
+                    def.health = std::max(it->second.health, curhealth);
+                    def.m2Path = it->second.m2Path;
+                } else {
+                    def.name = "Creature " + std::to_string(entry);
+                    def.level = 1;
+                    def.health = std::max(100u, curhealth);
+                }
+                if (def.m2Path.empty()) {
+                    def.m2Path = "Creature\\HumanMalePeasant\\HumanMalePeasant.m2";
+                }
+                def.canonicalPosition = canonical;
+                def.inputIsServerCoords = false;
+                def.rotation = o;
+                def.scale = 1.0f;
+                def.isCritter = (def.level <= 1 || def.health <= 50);
+                out.push_back(std::move(def));
+                if (out.size() >= kMaxSpawns) break;
+            } catch (const std::exception&) {
+            }
+        }
+        if (out.size() >= kMaxSpawns) break;
+    }
+
+    LOG_INFO("NpcManager: loaded ", out.size(), " nearby creature spawns from AzerothCore DB at ", basePath);
+    return out;
+}
+
 void NpcManager::initialize(pipeline::AssetManager* am,
                              rendering::CharacterRenderer* cr,
                              EntityManager& em,
-                             const glm::vec3& playerSpawnGL) {
+                             const std::string& mapName,
+                             const glm::vec3& playerCanonical,
+                             const rendering::TerrainManager* terrainManager) {
     if (!am || !am->isInitialized() || !cr) {
         LOG_WARNING("NpcManager: cannot initialize — missing AssetManager or CharacterRenderer");
         return;
     }
 
-    // Define spawn table: NPC positions are offsets from player spawn in GL coords
-    struct SpawnEntry {
-        const char* name;
-        const char* m2Path;
-        uint32_t level;
-        uint32_t health;
-        float offsetX;  // GL X offset from player
-        float offsetY;  // GL Y offset from player
-        float rotation;
-        float scale;
-        bool isCritter;
-    };
+    float globalDx = 0.0f;
+    float globalDy = 0.0f;
+    bool hasGlobalOffset = parseVec2Csv(std::getenv("WOW_NPC_OFFSET"), globalDx, globalDy);
+    float globalRotDeg = 0.0f;
+    parseFloatEnv(std::getenv("WOW_NPC_ROT_DEG"), globalRotDeg);
+    bool swapXY = false;
+    if (const char* swap = std::getenv("WOW_NPC_SWAP_XY")) {
+        std::string v = toLowerStr(trim(swap));
+        swapXY = (v == "1" || v == "true" || v == "yes");
+    }
+    float pivotX = playerCanonical.x;
+    float pivotY = playerCanonical.y;
+    parseVec2Csv(std::getenv("WOW_NPC_PIVOT"), pivotX, pivotY);
 
-    static const SpawnEntry spawnTable[] = {
-        // Guards
-        { "Stormwind Guard", "Creature\\HumanMaleGuard\\HumanMaleGuard.m2",
-          60, 42000, -15.0f, 10.0f, 0.0f, 1.0f, false },
-        { "Stormwind Guard", "Creature\\HumanMaleGuard\\HumanMaleGuard.m2",
-          60, 42000, 20.0f, -5.0f, 2.3f, 1.0f, false },
-        { "Stormwind Guard", "Creature\\HumanMaleGuard\\HumanMaleGuard.m2",
-          60, 42000, -25.0f, -15.0f, 1.0f, 1.0f, false },
+    if (hasGlobalOffset || swapXY || std::abs(globalRotDeg) > 0.001f) {
+        LOG_INFO("NpcManager: transform overrides swapXY=", swapXY,
+                 " rotDeg=", globalRotDeg,
+                 " pivot=(", pivotX, ", ", pivotY, ")",
+                 " offset=(", globalDx, ", ", globalDy, ")");
+    }
 
-        // Citizens
-        { "Stormwind Citizen", "Creature\\HumanMalePeasant\\HumanMalePeasant.m2",
-          5, 1200, 12.0f, 18.0f, 3.5f, 1.0f, false },
-        { "Stormwind Citizen", "Creature\\HumanMalePeasant\\HumanMalePeasant.m2",
-          5, 1200, -8.0f, -22.0f, 5.0f, 1.0f, false },
-        { "Stormwind Citizen", "Creature\\HumanFemalePeasant\\HumanFemalePeasant.m2",
-          5, 1200, 30.0f, 8.0f, 1.8f, 1.0f, false },
-        { "Stormwind Citizen", "Creature\\HumanFemalePeasant\\HumanFemalePeasant.m2",
-          5, 1200, -18.0f, 25.0f, 4.2f, 1.0f, false },
+    std::vector<NpcSpawnDef> spawnDefs = loadSpawnDefsFromFile("assets/npcs/singleplayer_spawns.csv");
+    std::string dbBasePath;
+    if (const char* dbBase = std::getenv("WOW_DB_BASE_PATH")) {
+        dbBasePath = dbBase;
+    } else if (std::filesystem::exists("assets/sql")) {
+        dbBasePath = "assets/sql";
+    }
+    if (!dbBasePath.empty()) {
+        auto dbDefs = loadSpawnDefsFromAzerothCoreDb(dbBasePath, mapName, playerCanonical, am);
+        if (!dbDefs.empty()) spawnDefs = std::move(dbDefs);
+    }
+    if (spawnDefs.empty()) {
+        LOG_WARNING("NpcManager: using built-in NPC spawns (assets/npcs/singleplayer_spawns.csv missing)");
+        spawnDefs = {
+            {"Azeroth", "Innkeeper Farley", "Creature\\HumanMalePeasant\\HumanMalePeasant.m2",
+             30, 5000, glm::vec3(76.0f, -9468.0f, 205.0f), false, 3.1f, 1.0f, false},
+            {"Azeroth", "Bernard Gump", "Creature\\HumanMalePeasant\\HumanMalePeasant.m2",
+             25, 4200, glm::vec3(92.0f, -9478.0f, 205.0f), false, 1.2f, 1.0f, false},
+            {"Azeroth", "Stormwind Guard", "Creature\\HumanMaleGuard\\HumanMaleGuard.m2",
+             60, 42000, glm::vec3(86.0f, -9478.0f, 205.0f), false, 0.1f, 1.0f, false},
+            {"Azeroth", "Stormwind Guard", "Creature\\HumanMaleGuard\\HumanMaleGuard.m2",
+             60, 42000, glm::vec3(37.0f, -9440.0f, 205.0f), false, 2.8f, 1.0f, false},
+            {"Azeroth", "Stormwind Citizen", "Creature\\HumanFemalePeasant\\HumanFemalePeasant.m2",
+             5, 1200, glm::vec3(62.0f, -9468.0f, 205.0f), false, 3.5f, 1.0f, false},
+            {"Azeroth", "Stormwind Citizen", "Creature\\HumanMalePeasant\\HumanMalePeasant.m2",
+             5, 1200, glm::vec3(23.0f, -9518.0f, 205.0f), false, 1.8f, 1.0f, false},
+            {"Azeroth", "Chicken", "Creature\\Chicken\\Chicken.m2",
+             1, 10, glm::vec3(58.0f, -9534.0f, 205.0f), false, 2.0f, 1.0f, true},
+            {"Azeroth", "Cat", "Creature\\Cat\\Cat.m2",
+             1, 42, glm::vec3(90.0f, -9446.0f, 205.0f), false, 4.5f, 1.0f, true}
+        };
+    }
 
-        // Critters
-        { "Wolf", "Creature\\Wolf\\Wolf.m2",
-          1, 42, 35.0f, -20.0f, 0.7f, 1.0f, true },
-        { "Wolf", "Creature\\Wolf\\Wolf.m2",
-          1, 42, 40.0f, -15.0f, 1.2f, 1.0f, true },
-        { "Chicken", "Creature\\Chicken\\Chicken.m2",
-          1, 10, -10.0f, 30.0f, 2.0f, 1.0f, true },
-        { "Chicken", "Creature\\Chicken\\Chicken.m2",
-          1, 10, -12.0f, 33.0f, 3.8f, 1.0f, true },
-        { "Cat", "Creature\\Cat\\Cat.m2",
-          1, 42, 5.0f, -35.0f, 4.5f, 1.0f, true },
-        { "Deer", "Creature\\Deer\\Deer.m2",
-          1, 42, -35.0f, -30.0f, 0.3f, 1.0f, true },
-    };
+    // Spawn only nearby placements on current map.
+    std::vector<const NpcSpawnDef*> active;
+    active.reserve(spawnDefs.size());
+    constexpr float kSpawnRadius = 2200.0f;
+    int mapSkipped = 0;
+    for (const auto& s : spawnDefs) {
+        if (!mapNamesEquivalent(mapName, s.mapName)) {
+            mapSkipped++;
+            continue;
+        }
+        glm::vec3 c = toCanonicalSpawn(s, swapXY, globalRotDeg, pivotX, pivotY, globalDx, globalDy);
+        float distX = c.x - playerCanonical.x;
+        float distY = c.y - playerCanonical.y;
+        if (distX * distX + distY * distY > kSpawnRadius * kSpawnRadius) continue;
+        active.push_back(&s);
+    }
 
-    constexpr size_t spawnCount = sizeof(spawnTable) / sizeof(spawnTable[0]);
+    if (active.empty()) {
+        LOG_INFO("NpcManager: no static NPC placements near player on map ", mapName,
+                 " (mapSkipped=", mapSkipped, ")");
+        return;
+    }
 
     // Load each unique M2 model once
-    for (size_t i = 0; i < spawnCount; i++) {
-        const std::string path(spawnTable[i].m2Path);
+    for (const auto* s : active) {
+        const std::string path = s->m2Path;
         if (loadedModels.find(path) == loadedModels.end()) {
             uint32_t mid = nextModelId++;
             loadCreatureModel(am, cr, path, mid);
@@ -281,17 +694,23 @@ void NpcManager::initialize(pipeline::AssetManager* am,
     }
 
     // Spawn each NPC instance
-    for (size_t i = 0; i < spawnCount; i++) {
-        const auto& s = spawnTable[i];
-        const std::string path(s.m2Path);
+    for (const auto* sPtr : active) {
+        const auto& s = *sPtr;
+        const std::string path = s.m2Path;
 
         auto it = loadedModels.find(path);
         if (it == loadedModels.end()) continue; // model failed to load
 
         uint32_t modelId = it->second;
 
-        // GL position: offset from player spawn
-        glm::vec3 glPos = playerSpawnGL + glm::vec3(s.offsetX, s.offsetY, 0.0f);
+        glm::vec3 canonical = toCanonicalSpawn(s, swapXY, globalRotDeg, pivotX, pivotY, globalDx, globalDy);
+        glm::vec3 glPos = core::coords::canonicalToRender(canonical);
+        // Keep authored indoor Z for named NPCs; terrain snap is mainly for critters/outdoor fauna.
+        if (terrainManager && s.isCritter) {
+            if (auto h = terrainManager->getHeightAt(glPos.x, glPos.y)) {
+                glPos.z = *h + 0.05f;
+            }
+        }
 
         // Create render instance
         uint32_t instanceId = cr->createInstance(modelId, glPos,
@@ -315,8 +734,8 @@ void NpcManager::initialize(pipeline::AssetManager* am,
         unit->setMaxHealth(s.health);
 
         // Store canonical WoW coordinates for targeting/server compatibility
-        glm::vec3 canonical = core::coords::renderToCanonical(glPos);
-        unit->setPosition(canonical.x, canonical.y, canonical.z, s.rotation);
+        glm::vec3 spawnCanonical = core::coords::renderToCanonical(glPos);
+        unit->setPosition(spawnCanonical.x, spawnCanonical.y, spawnCanonical.z, s.rotation);
 
         em.addEntity(guid, unit);
 

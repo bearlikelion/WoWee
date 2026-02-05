@@ -342,7 +342,13 @@ void Application::update(float deltaTime) {
             if (world) {
                 world->update(deltaTime);
             }
-            // Local test NPC spawning disabled.
+            // Spawn/update local single-player NPCs.
+            if (!npcsSpawned && singlePlayerMode) {
+                spawnNpcs();
+            }
+            if (npcManager && renderer && renderer->getCharacterRenderer()) {
+                npcManager->update(deltaTime, renderer->getCharacterRenderer());
+            }
 
             // Sync character render position → canonical WoW coords each frame
             if (renderer && gameHandler) {
@@ -854,17 +860,25 @@ void Application::spawnNpcs() {
     if (!gameHandler) return;
 
     npcManager = std::make_unique<game::NpcManager>();
-    glm::vec3 playerSpawnGL = renderer->getCamera()->getPosition() - glm::vec3(0.0f, 0.0f, 5.0f);
+    glm::vec3 playerSpawnGL = renderer->getCharacterPosition();
+    glm::vec3 playerCanonical = core::coords::renderToCanonical(playerSpawnGL);
+    std::string mapName = "Azeroth";
+    if (auto* minimap = renderer->getMinimap()) {
+        mapName = minimap->getMapName();
+    }
+
     npcManager->initialize(assetManager.get(),
                            renderer->getCharacterRenderer(),
                            gameHandler->getEntityManager(),
-                           playerSpawnGL);
+                           mapName,
+                           playerCanonical,
+                           renderer->getTerrainManager());
 
     // If the player WoW position hasn't been set by the server yet (offline mode),
     // derive it from the camera so targeting distance calculations work.
     const auto& movement = gameHandler->getMovementInfo();
     if (movement.x == 0.0f && movement.y == 0.0f && movement.z == 0.0f) {
-        glm::vec3 canonical = core::coords::renderToCanonical(playerSpawnGL);
+        glm::vec3 canonical = playerCanonical;
         gameHandler->setPosition(canonical.x, canonical.y, canonical.z);
     }
 
