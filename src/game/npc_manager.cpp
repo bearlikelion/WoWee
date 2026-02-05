@@ -788,6 +788,13 @@ void NpcManager::initialize(pipeline::AssetManager* am,
              loadedModels.size(), " unique models");
 }
 
+uint32_t NpcManager::findRenderInstanceId(uint64_t guid) const {
+    for (const auto& npc : npcs) {
+        if (npc.guid == guid) return npc.renderInstanceId;
+    }
+    return 0;
+}
+
 void NpcManager::update(float deltaTime, rendering::CharacterRenderer* cr) {
     if (!cr) return;
 

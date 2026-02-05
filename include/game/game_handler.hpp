@@ -204,6 +204,23 @@ public:
     const std::vector<AuraSlot>& getPlayerAuras() const { return playerAuras; }
     const std::vector<AuraSlot>& getTargetAuras() const { return targetAuras; }
 
+    // Single-player mode
+    void setSinglePlayerMode(bool sp) { singlePlayerMode_ = sp; }
+    bool isSinglePlayerMode() const { return singlePlayerMode_; }
+
+    // NPC death callback (single-player)
+    using NpcDeathCallback = std::function<void(uint64_t guid)>;
+    void setNpcDeathCallback(NpcDeathCallback cb) { npcDeathCallback_ = std::move(cb); }
+
+    // Local player stats (single-player)
+    uint32_t getLocalPlayerHealth() const { return localPlayerHealth_; }
+    uint32_t getLocalPlayerMaxHealth() const { return localPlayerMaxHealth_; }
+    void initLocalPlayerStats(uint32_t level, uint32_t hp, uint32_t maxHp) {
+        localPlayerLevel_ = level;
+        localPlayerHealth_ = hp;
+        localPlayerMaxHealth_ = maxHp;
+    }
+
     // Hearthstone callback (single-player teleport)
     using HearthstoneCallback = std::function<void()>;
     void setHearthstoneCallback(HearthstoneCallback cb) { hearthstoneCallback = std::move(cb); }
@@ -468,6 +485,29 @@ private:
     // Callbacks
     WorldConnectSuccessCallback onSuccess;
     WorldConnectFailureCallback onFailure;
+
+    // ---- Single-player combat ----
+    bool singlePlayerMode_ = false;
+    float swingTimer_ = 0.0f;
+    static constexpr float SWING_SPEED = 2.0f;
+    NpcDeathCallback npcDeathCallback_;
+    uint32_t localPlayerHealth_ = 0;
+    uint32_t localPlayerMaxHealth_ = 0;
+    uint32_t localPlayerLevel_ = 1;
+
+    struct NpcAggroEntry {
+        uint64_t guid;
+        float swingTimer;
+    };
+    std::vector<NpcAggroEntry> aggroList_;
+
+    void updateLocalCombat(float deltaTime);
+    void updateNpcAggro(float deltaTime);
+    void performPlayerSwing();
+    void performNpcSwing(uint64_t guid);
+    void handleNpcDeath(uint64_t guid);
+    void aggroNpc(uint64_t guid);
+    bool isNpcAggroed(uint64_t guid) const;
 };
 
 } // namespace game

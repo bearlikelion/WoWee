@@ -47,6 +47,8 @@ public:
                     const rendering::TerrainManager* terrainManager);
     void update(float deltaTime, rendering::CharacterRenderer* cr);
 
+    uint32_t findRenderInstanceId(uint64_t guid) const;
+
 private:
     std::vector<NpcSpawnDef> loadSpawnDefsFromFile(const std::string& path) const;
     std::vector<NpcSpawnDef> loadSpawnDefsFromAzerothCoreDb(

@@ -885,6 +885,18 @@ void Application::spawnNpcs() {
         gameHandler->setPosition(canonical.x, canonical.y, canonical.z);
     }
 
+    // Set NPC death callback for single-player combat
+    if (singlePlayerMode && gameHandler && npcManager) {
+        auto* npcMgr = npcManager.get();
+        auto* cr = renderer->getCharacterRenderer();
+        gameHandler->setNpcDeathCallback([npcMgr, cr](uint64_t guid) {
+            uint32_t instanceId = npcMgr->findRenderInstanceId(guid);
+            if (instanceId != 0 && cr) {
+                cr->playAnimation(instanceId, 1, false); // animation ID 1 = Death
+            }
+        });
+    }
+
     npcsSpawned = true;
     LOG_INFO("NPCs spawned for in-game session");
 }
@@ -894,6 +906,14 @@ void Application::startSinglePlayer() {
 
     // Set single-player flag
     singlePlayerMode = true;
+
+    // Enable single-player combat mode on game handler
+    if (gameHandler) {
+        gameHandler->setSinglePlayerMode(true);
+        uint32_t level = 10;
+        uint32_t maxHealth = 20 + level * 10;
+        gameHandler->initLocalPlayerStats(level, maxHealth, maxHealth);
+    }
 
     // Create world object for single-player
     if (!world) {

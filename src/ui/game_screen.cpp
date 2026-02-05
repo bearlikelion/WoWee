@@ -437,6 +437,13 @@ void GameScreen::processTargetInput(game::GameHandler& gameHandler) {
                     auto unit = std::static_pointer_cast<game::Unit>(target);
                     if (unit->getHealth() == 0 && unit->getMaxHealth() > 0) {
                         gameHandler.lootTarget(target->getGuid());
+                    } else if (gameHandler.isSinglePlayerMode()) {
+                        // Single-player: toggle auto-attack
+                        if (gameHandler.isAutoAttacking()) {
+                            gameHandler.stopAutoAttack();
+                        } else {
+                            gameHandler.startAutoAttack(target->getGuid());
+                        }
                     } else {
                         // Try NPC interaction first (gossip), fall back to attack
                         gameHandler.interactWithNpc(target->getGuid());
@@ -492,6 +499,12 @@ void GameScreen::renderPlayerFrame(game::GameHandler& gameHandler) {
                 playerHp = unit->getHealth();
                 playerMaxHp = unit->getMaxHealth();
             }
+        }
+
+        // Override with local player stats in single-player mode
+        if (gameHandler.isSinglePlayerMode() && gameHandler.getLocalPlayerMaxHealth() > 0) {
+            playerHp = gameHandler.getLocalPlayerHealth();
+            playerMaxHp = gameHandler.getLocalPlayerMaxHealth();
         }
 
         // Health bar

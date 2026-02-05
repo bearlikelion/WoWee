@@ -97,12 +97,14 @@ bool GameHandler::isConnected() const {
 }
 
 void GameHandler::update(float deltaTime) {
-    if (!socket) {
+    if (!socket && !singlePlayerMode_) {
         return;
     }
 
     // Update socket (processes incoming data and triggers callbacks)
-    socket->update();
+    if (socket) {
+        socket->update();
+    }
 
     // Validate target still exists
     if (targetGuid != 0 && !entityManager.hasEntity(targetGuid)) {
@@ -110,11 +112,13 @@ void GameHandler::update(float deltaTime) {
     }
 
     // Send periodic heartbeat if in world
-    if (state == WorldState::IN_WORLD) {
+    if (state == WorldState::IN_WORLD || singlePlayerMode_) {
         timeSinceLastPing += deltaTime;
 
         if (timeSinceLastPing >= pingInterval) {
-            sendPing();
+            if (socket) {
+                sendPing();
+            }
             timeSinceLastPing = 0.0f;
         }
 
@@ -148,6 +152,12 @@ void GameHandler::update(float deltaTime) {
 
         // Update combat text (Phase 2)
         updateCombatText(deltaTime);
+
+        // Single-player local combat
+        if (singlePlayerMode_) {
+            updateLocalCombat(deltaTime);
+            updateNpcAggro(deltaTime);
+        }
     }
 }
 
@@ -1114,6 +1124,7 @@ void GameHandler::handleCreatureQueryResponse(network::Packet& packet) {
 void GameHandler::startAutoAttack(uint64_t targetGuid) {
     autoAttacking = true;
     autoAttackTarget = targetGuid;
+    swingTimer_ = 0.0f;
     if (state == WorldState::IN_WORLD && socket) {
         auto packet = AttackSwingPacket::build(targetGuid);
         socket->send(packet);
@@ -1606,6 +1617,182 @@ void GameHandler::handleListInventory(network::Packet& packet) {
     if (!ListInventoryParser::parse(packet, currentVendorItems)) return;
     vendorWindowOpen = true;
     gossipWindowOpen = false; // Close gossip if vendor opens
+}
+
+// ============================================================
+// Single-player local combat
+// ============================================================
+
+void GameHandler::updateLocalCombat(float deltaTime) {
+    if (!autoAttacking || autoAttackTarget == 0) return;
+
+    auto entity = entityManager.getEntity(autoAttackTarget);
+    if (!entity || entity->getType() != ObjectType::UNIT) {
+        stopAutoAttack();
+        return;
+    }
+    auto unit = std::static_pointer_cast<Unit>(entity);
+    if (unit->getHealth() == 0) {
+        stopAutoAttack();
+        return;
+    }
+
+    // Check melee range (~8 units squared distance)
+    float dx = unit->getX() - movementInfo.x;
+    float dy = unit->getY() - movementInfo.y;
+    float dz = unit->getZ() - movementInfo.z;
+    float distSq = dx * dx + dy * dy + dz * dz;
+    if (distSq > 64.0f) return; // 8^2 = 64
+
+    swingTimer_ += deltaTime;
+    while (swingTimer_ >= SWING_SPEED) {
+        swingTimer_ -= SWING_SPEED;
+        performPlayerSwing();
+    }
+}
+
+void GameHandler::performPlayerSwing() {
+    if (autoAttackTarget == 0) return;
+    auto entity = entityManager.getEntity(autoAttackTarget);
+    if (!entity || entity->getType() != ObjectType::UNIT) return;
+    auto unit = std::static_pointer_cast<Unit>(entity);
+    if (unit->getHealth() == 0) return;
+
+    // Aggro the target
+    aggroNpc(autoAttackTarget);
+
+    // 5% miss chance
+    static std::mt19937 rng(std::random_device{}());
+    std::uniform_real_distribution<float> roll(0.0f, 1.0f);
+    if (roll(rng) < 0.05f) {
+        addCombatText(CombatTextEntry::MISS, 0, 0, true);
+        return;
+    }
+
+    // Damage calculation
+    int32_t baseDamage = 5 + static_cast<int32_t>(localPlayerLevel_) * 3;
+    std::uniform_real_distribution<float> dmgRange(0.8f, 1.2f);
+    int32_t damage = static_cast<int32_t>(baseDamage * dmgRange(rng));
+
+    // 10% crit chance (2x damage)
+    bool crit = roll(rng) < 0.10f;
+    if (crit) damage *= 2;
+
+    // Apply damage
+    uint32_t hp = unit->getHealth();
+    if (static_cast<uint32_t>(damage) >= hp) {
+        unit->setHealth(0);
+        handleNpcDeath(autoAttackTarget);
+    } else {
+        unit->setHealth(hp - static_cast<uint32_t>(damage));
+    }
+
+    addCombatText(crit ? CombatTextEntry::CRIT_DAMAGE : CombatTextEntry::MELEE_DAMAGE,
+                  damage, 0, true);
+}
+
+void GameHandler::handleNpcDeath(uint64_t guid) {
+    // Remove from aggro list
+    aggroList_.erase(
+        std::remove_if(aggroList_.begin(), aggroList_.end(),
+                       [guid](const NpcAggroEntry& e) { return e.guid == guid; }),
+        aggroList_.end());
+
+    // Stop auto-attack if target was this NPC
+    if (autoAttackTarget == guid) {
+        stopAutoAttack();
+    }
+
+    // Notify death callback (plays death animation)
+    if (npcDeathCallback_) {
+        npcDeathCallback_(guid);
+    }
+}
+
+void GameHandler::aggroNpc(uint64_t guid) {
+    if (!isNpcAggroed(guid)) {
+        aggroList_.push_back({guid, 0.0f});
+    }
+}
+
+bool GameHandler::isNpcAggroed(uint64_t guid) const {
+    for (const auto& e : aggroList_) {
+        if (e.guid == guid) return true;
+    }
+    return false;
+}
+
+void GameHandler::updateNpcAggro(float deltaTime) {
+    // Remove dead/missing NPCs and NPCs out of leash range
+    for (auto it = aggroList_.begin(); it != aggroList_.end(); ) {
+        auto entity = entityManager.getEntity(it->guid);
+        if (!entity || entity->getType() != ObjectType::UNIT) {
+            it = aggroList_.erase(it);
+            continue;
+        }
+        auto unit = std::static_pointer_cast<Unit>(entity);
+        if (unit->getHealth() == 0) {
+            it = aggroList_.erase(it);
+            continue;
+        }
+
+        // Leash range: 40 units
+        float dx = unit->getX() - movementInfo.x;
+        float dy = unit->getY() - movementInfo.y;
+        float distSq = dx * dx + dy * dy;
+        if (distSq > 1600.0f) { // 40^2
+            it = aggroList_.erase(it);
+            continue;
+        }
+
+        // Melee range: 8 units — NPC attacks player
+        float dz = unit->getZ() - movementInfo.z;
+        float fullDistSq = distSq + dz * dz;
+        if (fullDistSq <= 64.0f) { // 8^2
+            it->swingTimer += deltaTime;
+            if (it->swingTimer >= SWING_SPEED) {
+                it->swingTimer -= SWING_SPEED;
+                performNpcSwing(it->guid);
+            }
+        }
+        ++it;
+    }
+}
+
+void GameHandler::performNpcSwing(uint64_t guid) {
+    if (localPlayerHealth_ == 0) return;
+
+    auto entity = entityManager.getEntity(guid);
+    if (!entity || entity->getType() != ObjectType::UNIT) return;
+    auto unit = std::static_pointer_cast<Unit>(entity);
+
+    static std::mt19937 rng(std::random_device{}());
+    std::uniform_real_distribution<float> roll(0.0f, 1.0f);
+
+    // 5% miss
+    if (roll(rng) < 0.05f) {
+        addCombatText(CombatTextEntry::MISS, 0, 0, false);
+        return;
+    }
+
+    // Damage: 3 + npcLevel * 2
+    int32_t baseDamage = 3 + static_cast<int32_t>(unit->getLevel()) * 2;
+    std::uniform_real_distribution<float> dmgRange(0.8f, 1.2f);
+    int32_t damage = static_cast<int32_t>(baseDamage * dmgRange(rng));
+
+    // 5% crit (2x)
+    bool crit = roll(rng) < 0.05f;
+    if (crit) damage *= 2;
+
+    // Apply to local player health
+    if (static_cast<uint32_t>(damage) >= localPlayerHealth_) {
+        localPlayerHealth_ = 0;
+    } else {
+        localPlayerHealth_ -= static_cast<uint32_t>(damage);
+    }
+
+    addCombatText(crit ? CombatTextEntry::CRIT_DAMAGE : CombatTextEntry::MELEE_DAMAGE,
+                  damage, 0, false);
 }
 
 uint32_t GameHandler::generateClientSeed() {
