@@ -1607,6 +1607,11 @@ uint32_t Renderer::compileShadowShader() {
 }
 
 glm::mat4 Renderer::computeLightSpaceMatrix() {
+    constexpr float kShadowHalfExtent = 180.0f;
+    constexpr float kShadowLightDistance = 280.0f;
+    constexpr float kShadowNearPlane = 1.0f;
+    constexpr float kShadowFarPlane = 600.0f;
+
     // Sun direction matching WMO light dir
     glm::vec3 sunDir = glm::normalize(glm::vec3(-0.3f, -0.7f, -0.6f));
 
@@ -1630,7 +1635,7 @@ glm::mat4 Renderer::computeLightSpaceMatrix() {
     glm::vec3 center = shadowCenter;
 
     // Texel snapping: round center to shadow texel boundaries to prevent shimmer
-    float halfExtent = 120.0f;
+    float halfExtent = kShadowHalfExtent;
     float texelWorld = (2.0f * halfExtent) / static_cast<float>(SHADOW_MAP_SIZE);
 
     // Build light view to get stable axes
@@ -1639,7 +1644,7 @@ glm::mat4 Renderer::computeLightSpaceMatrix() {
     if (std::abs(glm::dot(sunDir, up)) > 0.99f) {
         up = glm::vec3(0.0f, 1.0f, 0.0f);
     }
-    glm::mat4 lightView = glm::lookAt(center - sunDir * 200.0f, center, up);
+    glm::mat4 lightView = glm::lookAt(center - sunDir * kShadowLightDistance, center, up);
 
     // Snap center in light space to texel grid
     glm::vec4 centerLS = lightView * glm::vec4(center, 1.0f);
@@ -1650,13 +1655,19 @@ glm::mat4 Renderer::computeLightSpaceMatrix() {
     shadowCenter = center;
 
     // Rebuild with snapped center
-    lightView = glm::lookAt(center - sunDir * 200.0f, center, up);
-    glm::mat4 lightProj = glm::ortho(-halfExtent, halfExtent, -halfExtent, halfExtent, 1.0f, 400.0f);
+    lightView = glm::lookAt(center - sunDir * kShadowLightDistance, center, up);
+    glm::mat4 lightProj = glm::ortho(-halfExtent, halfExtent, -halfExtent, halfExtent,
+                                     kShadowNearPlane, kShadowFarPlane);
 
     return lightProj * lightView;
 }
 
 void Renderer::renderShadowPass() {
+    constexpr float kShadowHalfExtent = 180.0f;
+    constexpr float kShadowLightDistance = 280.0f;
+    constexpr float kShadowNearPlane = 1.0f;
+    constexpr float kShadowFarPlane = 600.0f;
+
     // Compute light space matrix
     lightSpaceMatrix = computeLightSpaceMatrix();
 
@@ -1698,11 +1709,12 @@ void Renderer::renderShadowPass() {
         // For simplicity, compute the split:
         glm::vec3 sunDir = glm::normalize(glm::vec3(-0.3f, -0.7f, -0.6f));
         glm::vec3 center = shadowCenterInitialized ? shadowCenter : characterPosition;
-        float halfExtent = 120.0f;
+        float halfExtent = kShadowHalfExtent;
         glm::vec3 up(0.0f, 0.0f, 1.0f);
         if (std::abs(glm::dot(sunDir, up)) > 0.99f) up = glm::vec3(0.0f, 1.0f, 0.0f);
-        glm::mat4 lightView = glm::lookAt(center - sunDir * 200.0f, center, up);
-        glm::mat4 lightProj = glm::ortho(-halfExtent, halfExtent, -halfExtent, halfExtent, 1.0f, 400.0f);
+        glm::mat4 lightView = glm::lookAt(center - sunDir * kShadowLightDistance, center, up);
+        glm::mat4 lightProj = glm::ortho(-halfExtent, halfExtent, -halfExtent, halfExtent,
+                                         kShadowNearPlane, kShadowFarPlane);
 
         // WMO renderShadow needs a Shader reference — but it only uses setUniform("uModel", ...)
         // We'll create a thin wrapper. Actually, WMO's renderShadow takes a Shader& and calls

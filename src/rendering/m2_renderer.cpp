@@ -310,6 +310,8 @@ bool M2Renderer::initialize(pipeline::AssetManager* assets) {
                 vec4 lsPos = uLightSpaceMatrix * vec4(FragPos, 1.0);
                 vec3 proj = lsPos.xyz / lsPos.w * 0.5 + 0.5;
                 if (proj.z <= 1.0 && proj.x >= 0.0 && proj.x <= 1.0 && proj.y >= 0.0 && proj.y <= 1.0) {
+                    float edgeDist = max(abs(proj.x - 0.5), abs(proj.y - 0.5));
+                    float coverageFade = 1.0 - smoothstep(0.40, 0.49, edgeDist);
                     float bias = max(0.005 * (1.0 - abs(dot(normal, lightDir))), 0.001);
                     shadow = 0.0;
                     vec2 texelSize = vec2(1.0 / 2048.0);
@@ -319,6 +321,7 @@ bool M2Renderer::initialize(pipeline::AssetManager* assets) {
                         }
                     }
                     shadow /= 9.0;
+                    shadow = mix(1.0, shadow, coverageFade);
                 }
             }
             shadow = mix(1.0, shadow, clamp(uShadowStrength, 0.0, 1.0));
@@ -497,6 +500,7 @@ bool M2Renderer::loadModel(const pipeline::M2Model& model, uint32_t modelId) {
         tightMin = glm::min(tightMin, v.position);
         tightMax = glm::max(tightMax, v.position);
     }
+    bool foliageOrTreeLike = false;
     {
         std::string lowerName = model.name;
         std::transform(lowerName.begin(), lowerName.end(), lowerName.begin(),
@@ -545,6 +549,7 @@ bool M2Renderer::loadModel(const pipeline::M2Model& model, uint32_t modelId) {
             (lowerName.find("lily") != std::string::npos) ||
             (lowerName.find("weed") != std::string::npos);
         bool treeLike = (lowerName.find("tree") != std::string::npos);
+        foliageOrTreeLike = (foliageName || treeLike);
         bool hardTreePart =
             (lowerName.find("trunk") != std::string::npos) ||
             (lowerName.find("stump") != std::string::npos) ||
@@ -609,6 +614,7 @@ bool M2Renderer::loadModel(const pipeline::M2Model& model, uint32_t modelId) {
             break;
         }
     }
+    gpuModel.disableAnimation = foliageOrTreeLike;
 
     // Flag smoke models for UV scroll animation (particle emitters not implemented)
     {
@@ -773,7 +779,7 @@ uint32_t M2Renderer::createInstance(uint32_t modelId, const glm::vec3& position,
 
     // Initialize animation: play first sequence (usually Stand/Idle)
     const auto& mdl = models[modelId];
-    if (mdl.hasAnimation && !mdl.sequences.empty()) {
+    if (mdl.hasAnimation && !mdl.disableAnimation && !mdl.sequences.empty()) {
         instance.currentSequenceIndex = 0;
         instance.idleSequenceIndex = 0;
         instance.animDuration = static_cast<float>(mdl.sequences[0].duration);
@@ -827,7 +833,7 @@ uint32_t M2Renderer::createInstanceWithMatrix(uint32_t modelId, const glm::mat4&
     transformAABB(instance.modelMatrix, localMin, localMax, instance.worldBoundsMin, instance.worldBoundsMax);
     // Initialize animation
     const auto& mdl2 = models[modelId];
-    if (mdl2.hasAnimation && !mdl2.sequences.empty()) {
+    if (mdl2.hasAnimation && !mdl2.disableAnimation && !mdl2.sequences.empty()) {
         instance.currentSequenceIndex = 0;
         instance.idleSequenceIndex = 0;
         instance.animDuration = static_cast<float>(mdl2.sequences[0].duration);
@@ -1040,7 +1046,7 @@ void M2Renderer::update(float deltaTime) {
         if (it == models.end()) continue;
         const M2ModelGPU& model = it->second;
 
-        if (!model.hasAnimation) {
+        if (!model.hasAnimation || model.disableAnimation) {
             instance.animTime += dtMs;
             continue;
         }
@@ -1139,8 +1145,8 @@ void M2Renderer::render(const Camera& camera, const glm::mat4& view, const glm::
 
     lastDrawCallCount = 0;
 
-    // Adaptive render distance: shorter in dense areas (cities), longer in open terrain
-    const float maxRenderDistance = (instances.size() > 600) ? 180.0f : 2000.0f;
+    // Adaptive render distance: keep longer tree/foliage visibility to reduce pop-in.
+    const float maxRenderDistance = (instances.size() > 600) ? 320.0f : 2800.0f;
     const float maxRenderDistanceSq = maxRenderDistance * maxRenderDistance;
     const float fadeStartFraction = 0.75f;
     const glm::vec3 camPos = camera.getPosition();
@@ -1161,10 +1167,14 @@ void M2Renderer::render(const Camera& camera, const glm::mat4& view, const glm::
         float worldRadius = model.boundRadius * instance.scale;
         // Cull small objects (radius < 20) at distance, keep larger objects visible longer
         float effectiveMaxDistSq = maxRenderDistanceSq * std::max(1.0f, worldRadius / 12.0f);
+        if (model.disableAnimation) {
+            // Trees/foliage keep a larger horizon before culling.
+            effectiveMaxDistSq *= 1.8f;
+        }
         if (worldRadius < 0.8f) {
-            effectiveMaxDistSq = std::min(effectiveMaxDistSq, 65.0f * 65.0f);
-        } else if (worldRadius < 1.5f) {
             effectiveMaxDistSq = std::min(effectiveMaxDistSq, 95.0f * 95.0f);
+        } else if (worldRadius < 1.5f) {
+            effectiveMaxDistSq = std::min(effectiveMaxDistSq, 140.0f * 140.0f);
         }
         if (distSq > effectiveMaxDistSq) {
             continue;
@@ -1189,7 +1199,7 @@ void M2Renderer::render(const Camera& camera, const glm::mat4& view, const glm::
         shader->setUniform("uFadeAlpha", fadeAlpha);
 
         // Upload bone matrices if model has skeletal animation
-        bool useBones = model.hasAnimation && !instance.boneMatrices.empty();
+        bool useBones = model.hasAnimation && !model.disableAnimation && !instance.boneMatrices.empty();
         shader->setUniform("uUseBones", useBones);
         if (useBones) {
             int numBones = std::min(static_cast<int>(instance.boneMatrices.size()), 128);

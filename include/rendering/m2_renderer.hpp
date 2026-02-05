@@ -60,6 +60,7 @@ struct M2ModelGPU {
     std::vector<uint32_t> globalSequenceDurations;  // Loop durations for global sequence tracks
     bool hasAnimation = false;  // True if any bone has keyframes
     bool isSmoke = false;       // True for smoke models (UV scroll animation)
+    bool disableAnimation = false; // Keep foliage/tree doodads visually stable
     std::vector<int> idleVariationIndices;  // Sequence indices for idle variations (animId 0)
 
     bool isValid() const { return vao != 0 && indexCount > 0; }

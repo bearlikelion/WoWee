@@ -124,6 +124,8 @@ bool CharacterRenderer::initialize() {
                 vec4 lsPos = uLightSpaceMatrix * vec4(FragPos, 1.0);
                 vec3 proj = lsPos.xyz / lsPos.w * 0.5 + 0.5;
                 if (proj.z <= 1.0 && proj.x >= 0.0 && proj.x <= 1.0 && proj.y >= 0.0 && proj.y <= 1.0) {
+                    float edgeDist = max(abs(proj.x - 0.5), abs(proj.y - 0.5));
+                    float coverageFade = 1.0 - smoothstep(0.40, 0.49, edgeDist);
                     float bias = max(0.005 * (1.0 - abs(dot(normal, lightDir))), 0.001);
                     shadow = 0.0;
                     vec2 texelSize = vec2(1.0 / 2048.0);
@@ -133,6 +135,7 @@ bool CharacterRenderer::initialize() {
                         }
                     }
                     shadow /= 9.0;
+                    shadow = mix(1.0, shadow, coverageFade);
                 }
             }
             shadow = mix(1.0, shadow, clamp(uShadowStrength, 0.0, 1.0));

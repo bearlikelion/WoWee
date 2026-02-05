@@ -47,6 +47,8 @@ float calcShadow() {
     vec4 lsPos = uLightSpaceMatrix * vec4(FragPos, 1.0);
     vec3 proj = lsPos.xyz / lsPos.w * 0.5 + 0.5;
     if (proj.z > 1.0) return 1.0;
+    float edgeDist = max(abs(proj.x - 0.5), abs(proj.y - 0.5));
+    float coverageFade = 1.0 - smoothstep(0.40, 0.49, edgeDist);
     vec3 norm = normalize(Normal);
     vec3 lightDir = normalize(-uLightDir);
     float bias = max(0.005 * (1.0 - dot(norm, lightDir)), 0.001);
@@ -57,7 +59,8 @@ float calcShadow() {
             shadow += texture(uShadowMap, vec3(proj.xy + vec2(x, y) * texelSize, proj.z - bias));
         }
     }
-    return shadow / 9.0;
+    shadow /= 9.0;
+    return mix(1.0, shadow, coverageFade);
 }
 
 void main() {
