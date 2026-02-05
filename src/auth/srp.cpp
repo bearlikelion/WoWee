@@ -113,12 +113,13 @@ void SRP::computeSessionKey() {
     LOG_DEBUG("Computing session key");
 
     // u = H(A | B) - scrambling parameter
-    std::vector<uint8_t> A_bytes = A.toArray(true, 32);  // 32 bytes, little-endian
-    std::vector<uint8_t> B_bytes = B.toArray(true, 32);  // 32 bytes, little-endian
+    // Use natural BigNum sizes to match TrinityCore's UpdateBigNumbers behavior
+    std::vector<uint8_t> A_bytes_u = A.toArray(true);
+    std::vector<uint8_t> B_bytes_u = B.toArray(true);
 
     std::vector<uint8_t> AB;
-    AB.insert(AB.end(), A_bytes.begin(), A_bytes.end());
-    AB.insert(AB.end(), B_bytes.begin(), B_bytes.end());
+    AB.insert(AB.end(), A_bytes_u.begin(), A_bytes_u.end());
+    AB.insert(AB.end(), B_bytes_u.begin(), B_bytes_u.end());
 
     std::vector<uint8_t> u_bytes = Crypto::sha1(AB);
     u = BigNum(u_bytes, true);
@@ -176,8 +177,9 @@ void SRP::computeProofs(const std::string& username) {
     std::string upperUser = username;
     std::transform(upperUser.begin(), upperUser.end(), upperUser.begin(), ::toupper);
 
-    // Compute H(N) and H(g)
-    std::vector<uint8_t> N_bytes = N.toArray(true, 32);  // 32 bytes (256-bit prime)
+    // Compute H(N) and H(g) using natural BigNum sizes
+    // This matches TrinityCore/AzerothCore's UpdateBigNumbers behavior
+    std::vector<uint8_t> N_bytes = N.toArray(true);
     std::vector<uint8_t> g_bytes = g.toArray(true);
 
     std::vector<uint8_t> N_hash = Crypto::sha1(N_bytes);
@@ -192,31 +194,33 @@ void SRP::computeProofs(const std::string& username) {
     // Compute H(username)
     std::vector<uint8_t> user_hash = Crypto::sha1(upperUser);
 
-    // Get A, B, and salt as byte arrays
-    std::vector<uint8_t> A_bytes = A.toArray(true, 32);
-    std::vector<uint8_t> B_bytes = B.toArray(true, 32);
-    std::vector<uint8_t> s_bytes = s.toArray(true, 32);
+    // Get A, B, and salt as byte arrays — natural sizes for hash inputs
+    std::vector<uint8_t> A_bytes = A.toArray(true);
+    std::vector<uint8_t> B_bytes = B.toArray(true);
+    std::vector<uint8_t> s_bytes = s.toArray(true);
 
     // M1 = H( H(N)^H(g) | H(I) | s | A | B | K )
     std::vector<uint8_t> M1_input;
-    M1_input.insert(M1_input.end(), Ng_xor.begin(), Ng_xor.end());        // 20 bytes
-    M1_input.insert(M1_input.end(), user_hash.begin(), user_hash.end());  // 20 bytes
-    M1_input.insert(M1_input.end(), s_bytes.begin(), s_bytes.end());      // 32 bytes
-    M1_input.insert(M1_input.end(), A_bytes.begin(), A_bytes.end());      // 32 bytes
-    M1_input.insert(M1_input.end(), B_bytes.begin(), B_bytes.end());      // 32 bytes
-    M1_input.insert(M1_input.end(), K.begin(), K.end());                  // 40 bytes
+    M1_input.insert(M1_input.end(), Ng_xor.begin(), Ng_xor.end());
+    M1_input.insert(M1_input.end(), user_hash.begin(), user_hash.end());
+    M1_input.insert(M1_input.end(), s_bytes.begin(), s_bytes.end());
+    M1_input.insert(M1_input.end(), A_bytes.begin(), A_bytes.end());
+    M1_input.insert(M1_input.end(), B_bytes.begin(), B_bytes.end());
+    M1_input.insert(M1_input.end(), K.begin(), K.end());
 
-    M1 = Crypto::sha1(M1_input);  // 20 bytes
+    M1 = Crypto::sha1(M1_input);
 
     LOG_DEBUG("Client proof M1 calculated (", M1.size(), " bytes)");
+    LOG_DEBUG("  M1 hash input sizes: Ng_xor=20 user=20 s=", s_bytes.size(),
+              " A=", A_bytes.size(), " B=", B_bytes.size(), " K=", K.size());
 
     // M2 = H( A | M1 | K )
     std::vector<uint8_t> M2_input;
-    M2_input.insert(M2_input.end(), A_bytes.begin(), A_bytes.end());  // 32 bytes
-    M2_input.insert(M2_input.end(), M1.begin(), M1.end());            // 20 bytes
-    M2_input.insert(M2_input.end(), K.begin(), K.end());              // 40 bytes
+    M2_input.insert(M2_input.end(), A_bytes.begin(), A_bytes.end());
+    M2_input.insert(M2_input.end(), M1.begin(), M1.end());
+    M2_input.insert(M2_input.end(), K.begin(), K.end());
 
-    M2 = Crypto::sha1(M2_input);  // 20 bytes
+    M2 = Crypto::sha1(M2_input);
 
     LOG_DEBUG("Expected server proof M2 calculated (", M2.size(), " bytes)");
 }
