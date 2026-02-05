@@ -1064,15 +1064,6 @@ void Renderer::renderWorld(game::World* world) {
         glEnable(GL_DEPTH_TEST);
     }
 
-    // Render minimap overlay
-    if (minimap && camera && window) {
-        glm::vec3 minimapCenter = camera->getPosition();
-        if (cameraController && cameraController->isThirdPerson()) {
-            minimapCenter = characterPosition;
-        }
-        minimap->render(*camera, minimapCenter, window->getWidth(), window->getHeight());
-    }
-
     // --- Resolve MSAA → non-MSAA texture ---
     glBindFramebuffer(GL_READ_FRAMEBUFFER, sceneFBO);
     glBindFramebuffer(GL_DRAW_FRAMEBUFFER, resolveFBO);
@@ -1094,6 +1085,15 @@ void Renderer::renderWorld(game::World* world) {
         glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
         glBindVertexArray(0);
         postProcessShader->unuse();
+    }
+
+    // Render minimap overlay (after post-process so it's not overwritten)
+    if (minimap && camera && window) {
+        glm::vec3 minimapCenter = camera->getPosition();
+        if (cameraController && cameraController->isThirdPerson()) {
+            minimapCenter = characterPosition;
+        }
+        minimap->render(*camera, minimapCenter, window->getWidth(), window->getHeight());
     }
 
     glEnable(GL_DEPTH_TEST);
@@ -1307,9 +1307,9 @@ bool Renderer::loadTestTerrain(pipeline::AssetManager* assetManager, const std::
         if (characterRenderer) {
             characterRenderer->setAssetManager(assetManager);
         }
-        // Wire terrain renderer to minimap
+        // Wire asset manager to minimap for tile texture loading
         if (minimap) {
-            minimap->setTerrainRenderer(terrainRenderer.get());
+            minimap->setAssetManager(assetManager);
         }
         // Wire terrain manager, WMO renderer, and water renderer to camera controller
         if (cameraController) {
@@ -1349,6 +1349,9 @@ bool Renderer::loadTestTerrain(pipeline::AssetManager* assetManager, const std::
             // Extract map name
             std::string mapName = filename.substr(0, firstUnderscore != std::string::npos ? firstUnderscore : filename.size());
             terrainManager->setMapName(mapName);
+            if (minimap) {
+                minimap->setMapName(mapName);
+            }
         }
     }
 

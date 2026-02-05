@@ -236,12 +236,6 @@ void Application::run() {
                         LOG_INFO("Performance HUD: ", enabled ? "ON" : "OFF");
                     }
                 }
-                // N: Toggle minimap
-                else if (event.key.keysym.scancode == SDL_SCANCODE_N) {
-                    if (renderer && renderer->getMinimap()) {
-                        renderer->getMinimap()->toggle();
-                    }
-                }
                 // T: Toggle teleporter panel
                 else if (event.key.keysym.scancode == SDL_SCANCODE_T) {
                     if (state == AppState::IN_GAME && uiManager) {

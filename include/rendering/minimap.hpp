@@ -4,13 +4,15 @@
 #include <glm/glm.hpp>
 #include <chrono>
 #include <memory>
+#include <string>
+#include <unordered_map>
 
 namespace wowee {
+namespace pipeline { class AssetManager; }
 namespace rendering {
 
 class Shader;
 class Camera;
-class TerrainRenderer;
 
 class Minimap {
 public:
@@ -20,7 +22,8 @@ public:
     bool initialize(int size = 200);
     void shutdown();
 
-    void setTerrainRenderer(TerrainRenderer* tr) { terrainRenderer = tr; }
+    void setAssetManager(pipeline::AssetManager* am) { assetManager = am; }
+    void setMapName(const std::string& name);
 
     void render(const Camera& playerCamera, const glm::vec3& centerWorldPos,
                 int screenWidth, int screenHeight);
@@ -32,15 +35,33 @@ public:
     void setViewRadius(float radius) { viewRadius = radius; }
 
 private:
-    void renderTerrainToFBO(const Camera& playerCamera, const glm::vec3& centerWorldPos);
-    void renderQuad(int screenWidth, int screenHeight);
+    void parseTRS();
+    GLuint getOrLoadTileTexture(int tileX, int tileY);
+    void compositeTilesToFBO(const glm::vec3& centerWorldPos);
+    void renderQuad(const Camera& playerCamera, const glm::vec3& centerWorldPos,
+                    int screenWidth, int screenHeight);
 
-    TerrainRenderer* terrainRenderer = nullptr;
+    pipeline::AssetManager* assetManager = nullptr;
+    std::string mapName = "Azeroth";
 
-    // FBO for offscreen rendering
-    GLuint fbo = 0;
-    GLuint fboTexture = 0;
-    GLuint fboDepth = 0;
+    // TRS lookup: "Azeroth\map32_49" → "e7f0dea73ee6baca78231aaf4b7e772a"
+    std::unordered_map<std::string, std::string> trsLookup;
+    bool trsParsed = false;
+
+    // Tile texture cache: hash → GL texture ID
+    std::unordered_map<std::string, GLuint> tileTextureCache;
+    GLuint noDataTexture = 0;  // dark fallback for missing tiles
+
+    // Composite FBO (3x3 tiles = 768x768)
+    GLuint compositeFBO = 0;
+    GLuint compositeTexture = 0;
+    static constexpr int TILE_PX = 256;
+    static constexpr int COMPOSITE_PX = TILE_PX * 3;  // 768
+
+    // Tile compositing quad
+    GLuint tileQuadVAO = 0;
+    GLuint tileQuadVBO = 0;
+    std::unique_ptr<Shader> tileShader;
 
     // Screen quad
     GLuint quadVAO = 0;
@@ -48,13 +69,19 @@ private:
     std::unique_ptr<Shader> quadShader;
 
     int mapSize = 200;
-    float viewRadius = 500.0f;
-    bool enabled = false;
+    float viewRadius = 400.0f;  // world units visible in minimap radius
+    bool enabled = true;
+
+    // Throttling
     float updateIntervalSec = 0.25f;
     float updateDistance = 6.0f;
-    std::chrono::steady_clock::time_point lastUpdateTime = std::chrono::steady_clock::time_point{};
-    glm::vec3 lastUpdatePos = glm::vec3(0.0f);
+    std::chrono::steady_clock::time_point lastUpdateTime{};
+    glm::vec3 lastUpdatePos{0.0f};
     bool hasCachedFrame = false;
+
+    // Tile tracking
+    int lastCenterTileX = -1;
+    int lastCenterTileY = -1;
 };
 
 } // namespace rendering
