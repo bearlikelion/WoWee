@@ -42,7 +42,7 @@ wowee
 .DS_Store
 
 # External dependencies (except CMakeLists.txt)
-extern/*
+# extern/*
 !extern/.gitkeep
 
 # ImGui state
