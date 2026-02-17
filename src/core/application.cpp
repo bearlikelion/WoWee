@@ -328,8 +328,8 @@ void Application::run() {
         totalSwapMs += std::chrono::duration<double, std::milli>(t4 - t3).count();
 
         if (++frameCount >= 60) {
-            printf("[Frame] Update: %.1f ms, Render: %.1f ms, Swap: %.1f ms\n",
-                   totalUpdateMs / 60.0, totalRenderMs / 60.0, totalSwapMs / 60.0);
+            // printf("[Frame] Update: %.1f ms, Render: %.1f ms, Swap: %.1f ms\n",
+                   // totalUpdateMs / 60.0, totalRenderMs / 60.0, totalSwapMs / 60.0);
             frameCount = 0;
             totalUpdateMs = totalRenderMs = totalSwapMs = 0;
         }

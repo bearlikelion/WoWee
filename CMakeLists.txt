@@ -352,6 +352,9 @@ elseif(glm_FOUND)
     target_include_directories(wowee PRIVATE ${GLM_INCLUDE_DIRS})
 endif()
 
+# Newer GLM releases require this for gtx/* headers used by wowee sources.
+target_compile_definitions(wowee PRIVATE GLM_ENABLE_EXPERIMENTAL)
+
 # Compiler warnings
 if(MSVC)
     target_compile_options(wowee PRIVATE /W4)
@@ -470,19 +473,24 @@ set_target_properties(auth_login_probe PROPERTIES
 )
 
 # ---- Tool: blp_convert (BLP ↔ PNG) ----
-add_executable(blp_convert
-    tools/blp_convert/main.cpp
-    src/pipeline/blp_loader.cpp
-    src/core/logger.cpp
-)
-target_include_directories(blp_convert PRIVATE
-    ${CMAKE_CURRENT_SOURCE_DIR}/include
-    ${CMAKE_CURRENT_SOURCE_DIR}/extern
-)
-target_link_libraries(blp_convert PRIVATE Threads::Threads)
-set_target_properties(blp_convert PROPERTIES
-    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin
-)
+if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/extern/stb_image_write.h")
+    add_executable(blp_convert
+        tools/blp_convert/main.cpp
+        src/pipeline/blp_loader.cpp
+        src/core/logger.cpp
+    )
+    target_include_directories(blp_convert PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/include
+        ${CMAKE_CURRENT_SOURCE_DIR}/extern
+    )
+    target_link_libraries(blp_convert PRIVATE Threads::Threads)
+    set_target_properties(blp_convert PROPERTIES
+        RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin
+    )
+    message(STATUS "  blp_convert tool: ENABLED")
+else()
+    message(STATUS "  blp_convert tool: DISABLED (missing extern/stb_image_write.h)")
+endif()
 
 # Print configuration summary
 message(STATUS "")

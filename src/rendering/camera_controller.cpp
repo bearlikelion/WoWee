@@ -8,6 +8,7 @@
 #include "core/logger.hpp"
 #include <glm/glm.hpp>
 #include <imgui.h>
+#include <algorithm>
 #include <cmath>
 #include <limits>
 
