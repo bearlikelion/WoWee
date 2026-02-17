@@ -20,6 +20,36 @@ BUILD_DIR="${SCRIPT_DIR}/build"
 BINARY="${BUILD_DIR}/bin/asset_extract"
 OUTPUT_DIR="${SCRIPT_DIR}/Data"
 
+has_stormlib() {
+    # 1) pkg-config names used across distros/packages
+    if command -v pkg-config >/dev/null 2>&1; then
+        if pkg-config --exists stormlib 2>/dev/null || pkg-config --exists libstorm 2>/dev/null; then
+            return 0
+        fi
+    fi
+
+    # 2) Direct compile/link probe (catches AUR/system installs without pkg-config metadata)
+    if command -v c++ >/dev/null 2>&1; then
+        if printf '#include <StormLib.h>\nint main(){return 0;}\n' \
+            | c++ -x c++ - -o /dev/null -lStorm -lstdc++ >/dev/null 2>&1; then
+            return 0
+        fi
+        if printf '#include <StormLib.h>\nint main(){return 0;}\n' \
+            | c++ -x c++ - -o /dev/null -lstorm >/dev/null 2>&1; then
+            return 0
+        fi
+    fi
+
+    # 3) Fallback checks for typical install locations
+    if [ -f /usr/include/StormLib.h ] || [ -f /usr/local/include/StormLib.h ]; then
+        if [ -e /usr/lib/libstorm.so ] || [ -e /usr/lib/libStorm.so ] || [ -e /usr/local/lib/libstorm.so ] || [ -e /usr/local/lib/libStorm.so ]; then
+            return 0
+        fi
+    fi
+
+    return 1
+}
+
 # --- Validate arguments ---
 if [ $# -lt 1 ]; then
     echo "Usage: $0 /path/to/WoW/Data [classic|turtle|tbc|wotlk]"
@@ -53,8 +83,9 @@ if [ -d "${OUTPUT_DIR}/expansions" ]; then
     fi
 fi
 
-# Quick sanity check: look for any .MPQ files
-if ! ls "$MPQ_DIR"/*.MPQ "$MPQ_DIR"/*.mpq 2>/dev/null | head -1 > /dev/null 2>&1; then
+# Quick sanity check: look for any .MPQ files.
+# Use find instead of ls+globs so this works with pipefail and mixed case.
+if ! find "$MPQ_DIR" -maxdepth 2 -type f -iname '*.mpq' -print -quit | grep -q .; then
     echo "Error: No .MPQ files found in: $MPQ_DIR"
     echo "Make sure this is the WoW Data/ directory (not the WoW root)."
     exit 1
@@ -63,17 +94,17 @@ fi
 # --- Build asset_extract if needed ---
 if [ ! -f "$BINARY" ]; then
     # --- Check for StormLib (only required to build) ---
-    if ! ldconfig -p 2>/dev/null | grep -qi stormlib; then
+    if ! has_stormlib; then
         echo "Error: StormLib not found."
-        echo "Install it with: sudo apt install libstormlib-dev"
+        echo "Install it with: sudo apt install libstorm-dev"
+        echo "  or on Arch: sudo pacman -S stormlib"
         echo "  or build from source: https://github.com/ladislav-zezula/StormLib"
         exit 1
     fi
 
     echo "Building asset_extract..."
-    if [ ! -d "$BUILD_DIR" ]; then
-        cmake -S "$SCRIPT_DIR" -B "$BUILD_DIR" -DCMAKE_BUILD_TYPE=Release
-    fi
+    # Always configure first so CMake can (re)detect optional deps like StormLib.
+    cmake -S "$SCRIPT_DIR" -B "$BUILD_DIR" -DCMAKE_BUILD_TYPE=Release
     cmake --build "$BUILD_DIR" --target asset_extract -- -j"$(nproc)"
     echo ""
 fi
